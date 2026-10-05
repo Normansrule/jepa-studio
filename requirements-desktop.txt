@@ -1,6 +1,6 @@
 # Pinned versions the desktop app installs into its private environment (one-click setup).
 # The shell picks the torch wheel index for the detected accelerator (CUDA / ROCm / CPU / macOS).
-torch==2.14.0
+torch==2.14.1
 torchvision==0.29.0
 numpy==2.4.4
 safetensors==0.8.0
