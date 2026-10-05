@@ -1512,7 +1512,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "dunce",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "sha2",
