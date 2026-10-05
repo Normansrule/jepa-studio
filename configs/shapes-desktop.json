@@ -1,0 +1,6 @@
+{
+  "name": "shapes-desktop",
+  "data": {"kind": "synthetic-shapes", "max_items": 8192, "labeled_fraction": 0.1},
+  "model": {"arch": "convnet-tiny", "embed_dim": 128, "proj_dim": 16},
+  "train": {"epochs": 12, "batch_size": 128, "effective_batch": 128, "lr": 2e-3, "log_every": 10, "checkpoint_every": 200}
+}

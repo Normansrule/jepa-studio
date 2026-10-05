@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Node / desktop shell
+node_modules/
+desktop/src-tauri/target/
+
+# Run folders. Your own runs stay local; the three runs quoted as real results in the README
+# (config, hardware, eval, events, metrics and final weights) are tracked. Checkpoints never are.
+runs/*
+!runs/shapes-desktop/
+!runs/world-two-room/
+!runs/world-push-block/
+runs/*/ckpt/
+runs/*/control.json
+
+# Never commit a signing key (`jepa-studio keygen` writes signing-key.txt by default)
+signing-key.txt
+*.key
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

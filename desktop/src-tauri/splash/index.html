@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Setting up jepa-studio</title>
+<link rel="stylesheet" href="splash.css">
+<script src="splash.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <svg class="glyph" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="6" fill="#172033"/><circle cx="11" cy="16" r="5" fill="none" stroke="#12b5a3" stroke-width="2.5"/><circle cx="21" cy="16" r="5" fill="#e0a030"/></svg>
+    <h1>jepa-studio</h1>
+  </header>
+  <p id="headline" role="status" aria-live="polite">Starting…</p>
+  <div class="bar" role="progressbar" aria-labelledby="headline" aria-valuemin="0" aria-valuemax="100"><span id="fill"></span></div>
+  <p id="line" class="line"></p>
+  <p id="note" class="note">The first launch installs PyTorch into a private environment (a few GB). Later launches take seconds.</p>
+  <section id="error" hidden>
+    <h2>Setup could not finish</h2>
+    <pre id="error-text"></pre>
+    <p class="note">Full log: <code id="log-path"></code><br>Close this window and start jepa-studio again after fixing the problem. See docs/desktop.md, "Troubleshooting".</p>
+  </section>
+</main>
+</body>
+</html>

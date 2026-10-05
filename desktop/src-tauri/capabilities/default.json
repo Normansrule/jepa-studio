@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The app window (site/app.html on the bundled origin): the two shell commands and nothing else. No core:default, no fs, shell or http plugin; the folder dialog is opened by the Rust side of pick_data_folder, so dialog:allow-open is not granted to JS either.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-pick-data-folder",
+    "allow-backend-status"
+  ]
+}

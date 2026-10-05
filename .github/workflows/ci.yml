@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only by default; no job here needs to write anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and docs index
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: python -m pip install --disable-pip-version-check ruff==0.15.11
+      - name: Ruff
+        run: ruff check . --output-format=github
+      - name: site/docs-index.json matches docs/ and README.md
+        run: python scripts/build_docs_index.py --check
+
+  test:
+    name: Tests (Python 3.11, CPU PyTorch, Node 22)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      # Node runs the browser-engine parity checks in tests/js (no npm dependencies).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install CPU-only PyTorch
+        run: >-
+          python -m pip install --disable-pip-version-check
+          torch==2.14.0 torchvision==0.29.0
+          --index-url https://download.pytorch.org/whl/cpu
+      - name: Install jepa-studio and pytest
+        run: python -m pip install --disable-pip-version-check -e ".[onnx,video]" pytest==9.1.1
+      - name: Standalone Node checks
+        run: |
+          node --version
+          node tests/js/engine_gradcheck.mjs
+          node tests/js/trainer_smoke.mjs
+      - name: Pytest (not slow; Playwright only if its browser is installed)
+        run: |
+          args=(-m "not slow" -rs)
+          if ! python -c "import playwright" 2>/dev/null; then
+            args+=(--ignore=tests/test_site_playwright.py)
+          fi
+          # The other Node scripts take arguments and run through their pytest wrappers
+          # (tests/test_web_engine.py, tests/test_world_parity.py), which skip only without node.
+          python -m pytest "${args[@]}"

@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1000 702" width="1000" height="702" role="img" aria-labelledby="t d"><title id="t">Web demo vs desktop app</title><desc id="d">Capability table: Compute backend: web part, desktop yes; WebAssembly (WASM) kernels: web plan, desktop na; Pretraining: web yes, desktop yes; Your own data: web part, desktop yes; Video and time series: web part, desktop yes; Inference (embeddings): web part, desktop yes; Embedding explorer: web yes, desktop yes; Evaluation: web yes, desktop yes; Planning bot (world model): web yes, desktop yes; Auto-tuning: web part, desktop yes; Export: web yes, desktop yes</desc><style>:root{--view:#00897b;--encoder:#b86e00;--predictor:#5e3fc0;--pred:#3c8fe8;--sigreg:#d42f5f;--bg:#f5f6f8;--surface:#ffffff;--surface-2:#eef0f4;--ink:#172033;--ink-2:#4a5468;--ink-3:#636c7e;--line:#d9dde5;--line-strong:#aeb6c4;--good:#0b8a0b;--warn:#a86f00;--bad:#c43333;}
+@media (prefers-color-scheme: dark){:root{--view:#129e8e;--encoder:#c4850a;--predictor:#8a5ce0;--pred:#4196f0;--sigreg:#e84a66;--bg:#121826;--surface:#1b2437;--surface-2:#232e45;--ink:#e8ecf4;--ink-2:#b4bccb;--ink-3:#97a1b4;--line:#2e3a54;--line-strong:#4a587a;--good:#35c235;--warn:#fab219;--bad:#f06a6a;}}
+svg{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;}.bg{fill:var(--surface);stroke:var(--line);stroke-width:1}.t{fill:var(--ink)} .t2{fill:var(--ink-2)} .t3{fill:var(--ink-3)}.m{font-family:'Latin Modern Roman', 'CMU Serif', 'Computer Modern', Georgia, 'Times New Roman', serif;fill:var(--ink)} .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}.h{font-weight:600}.rule{stroke:var(--line);stroke-width:1} .hdr{font-weight:600}.yes{stroke:var(--good);fill:none} .part{stroke:var(--warn);fill:none} .plan{stroke:var(--ink-3);fill:none}.na{stroke:var(--ink-3);fill:none} .wyes{fill:var(--good)} .wpart{fill:var(--warn)}.wplan{fill:var(--ink-3)} .wna{fill:var(--ink-3)} .band{fill:var(--surface-2)}</style><rect class="bg" x="0.5" y="0.5" width="999" height="701" rx="6"/>
+<text x="20" y="30" class="t" font-size="16" text-anchor="start" font-weight="600">What runs where</text>
+<text x="20" y="50" class="t2" font-size="12" text-anchor="start">Checked against site/js, docs/web-demo.md and jepa_studio/ (2026-09-30). Every mark has a word; “planned” means not implemented yet.</text>
+<text x="250" y="82" class="t hdr" font-size="13" text-anchor="start">Web demo (in the browser tab)</text>
+<text x="620" y="82" class="t hdr" font-size="13" text-anchor="start">Desktop app and CLI (PyTorch)</text>
+<line class="rule" x1="12" x2="988" y1="92" y2="92"/>
+<rect class="band" x="12" y="96" width="976" height="50"/>
+<text x="28" y="125" class="t hdr" font-size="13" text-anchor="start">Compute backend</text>
+<path class="part" stroke-width="2.4" stroke-linecap="round" d="M250,116 h12"/>
+<text x="270" y="120" class="wpart" font-size="12" text-anchor="start" font-weight="700">Partly</text>
+<text x="328" y="120" class="t2" font-size="12" text-anchor="start">WebGPU for the first layer when it is</text>
+<text x="328" y="137" class="t2" font-size="12" text-anchor="start">correct and faster; else JavaScript (CPU)</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,116 l4,4 l8,-9"/>
+<text x="640" y="120" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="120" class="t2" font-size="12" text-anchor="start">PyTorch on NVIDIA CUDA, AMD ROCm,</text>
+<text x="698" y="137" class="t2" font-size="12" text-anchor="start">Apple Metal Performance Shaders (MPS) or CPU</text>
+<text x="28" y="175" class="t hdr" font-size="13" text-anchor="start">WebAssembly (WASM) kernels</text>
+<circle class="plan" stroke-width="1.8" stroke-dasharray="2.5 2" cx="256" cy="166" r="6"/>
+<text x="270" y="170" class="wplan" font-size="12" text-anchor="start" font-weight="700">Planned</text>
+<text x="328" y="170" class="t2" font-size="12" text-anchor="start">the config accepts "wasm", but the CPU</text>
+<text x="328" y="187" class="t2" font-size="12" text-anchor="start">path is plain JavaScript today</text>
+<path class="na" stroke-width="1.8" stroke-linecap="round" d="M620,166 h8"/>
+<text x="640" y="170" class="wna" font-size="12" text-anchor="start" font-weight="700">n/a</text>
+<text x="698" y="170" class="t2" font-size="12" text-anchor="start">not needed: native PyTorch</text>
+<rect class="band" x="12" y="196" width="976" height="50"/>
+<text x="28" y="225" class="t hdr" font-size="13" text-anchor="start">Pretraining</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M250,216 l4,4 l8,-9"/>
+<text x="270" y="220" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="328" y="220" class="t2" font-size="12" text-anchor="start">tiny: mlp-tiny on 16×16 inputs,</text>
+<text x="328" y="237" class="t2" font-size="12" text-anchor="start">a few minutes in the tab</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,216 l4,4 l8,-9"/>
+<text x="640" y="220" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="220" class="t2" font-size="12" text-anchor="start">full: ConvNet-tiny/small, ViT-tiny,</text>
+<text x="698" y="237" class="t2" font-size="12" text-anchor="start">checkpoints, pause and resume</text>
+<text x="28" y="275" class="t hdr" font-size="13" text-anchor="start">Your own data</text>
+<path class="part" stroke-width="2.4" stroke-linecap="round" d="M250,266 h12"/>
+<text x="270" y="270" class="wpart" font-size="12" text-anchor="start" font-weight="700">Partly</text>
+<text x="328" y="270" class="t2" font-size="12" text-anchor="start">up to 2,000 images, read in the page</text>
+<text x="328" y="287" class="t2" font-size="12" text-anchor="start">(never uploaded)</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,266 l4,4 l8,-9"/>
+<text x="640" y="270" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="270" class="t2" font-size="12" text-anchor="start">image folders of any size, granted</text>
+<text x="698" y="287" class="t2" font-size="12" text-anchor="start">one at a time in a native folder dialog</text>
+<rect class="band" x="12" y="296" width="976" height="50"/>
+<text x="28" y="325" class="t hdr" font-size="13" text-anchor="start">Video and time series</text>
+<path class="part" stroke-width="2.4" stroke-linecap="round" d="M250,316 h12"/>
+<text x="270" y="320" class="wpart" font-size="12" text-anchor="start" font-weight="700">Partly</text>
+<text x="328" y="320" class="t2" font-size="12" text-anchor="start">CSV preview and views only</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,316 l4,4 l8,-9"/>
+<text x="640" y="320" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="320" class="t2" font-size="12" text-anchor="start">video-convnet and series-conv encoders</text>
+<text x="28" y="375" class="t hdr" font-size="13" text-anchor="start">Inference (embeddings)</text>
+<path class="part" stroke-width="2.4" stroke-linecap="round" d="M250,366 h12"/>
+<text x="270" y="370" class="wpart" font-size="12" text-anchor="start" font-weight="700">Partly</text>
+<text x="328" y="370" class="t2" font-size="12" text-anchor="start">small encoders only: train or load</text>
+<text x="328" y="387" class="t2" font-size="12" text-anchor="start">mlp-tiny .safetensors in the browser</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,366 l4,4 l8,-9"/>
+<text x="640" y="370" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="370" class="t2" font-size="12" text-anchor="start">any trained encoder</text>
+<rect class="band" x="12" y="396" width="976" height="50"/>
+<text x="28" y="425" class="t hdr" font-size="13" text-anchor="start">Embedding explorer</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M250,416 l4,4 l8,-9"/>
+<text x="270" y="420" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="328" y="420" class="t2" font-size="12" text-anchor="start">PCA 2-D/3-D, neighbours, isotropy and</text>
+<text x="328" y="437" class="t2" font-size="12" text-anchor="start">collapse check, saliency</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,416 l4,4 l8,-9"/>
+<text x="640" y="420" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="420" class="t2" font-size="12" text-anchor="start">same front end, served by the</text>
+<text x="698" y="437" class="t2" font-size="12" text-anchor="start">local PyTorch backend</text>
+<text x="28" y="475" class="t hdr" font-size="13" text-anchor="start">Evaluation</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M250,466 l4,4 l8,-9"/>
+<text x="270" y="470" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="328" y="470" class="t2" font-size="12" text-anchor="start">linear probe, k-NN, random-init and</text>
+<text x="328" y="487" class="t2" font-size="12" text-anchor="start">supervised baselines (small model)</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,466 l4,4 l8,-9"/>
+<text x="640" y="470" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="470" class="t2" font-size="12" text-anchor="start">same protocol on the full model</text>
+<rect class="band" x="12" y="496" width="976" height="50"/>
+<text x="28" y="525" class="t hdr" font-size="13" text-anchor="start">Planning bot (world model)</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M250,516 l4,4 l8,-9"/>
+<text x="270" y="520" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="328" y="520" class="t2" font-size="12" text-anchor="start">pretrained two-room and push-block models;</text>
+<text x="328" y="537" class="t2" font-size="12" text-anchor="start">cross-entropy method (CEM) planning</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,516 l4,4 l8,-9"/>
+<text x="640" y="520" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="520" class="t2" font-size="12" text-anchor="start">train your own world models, then plan</text>
+<text x="28" y="575" class="t hdr" font-size="13" text-anchor="start">Auto-tuning</text>
+<path class="part" stroke-width="2.4" stroke-linecap="round" d="M250,566 h12"/>
+<text x="270" y="570" class="wpart" font-size="12" text-anchor="start" font-weight="700">Partly</text>
+<text x="328" y="570" class="t2" font-size="12" text-anchor="start">batch-size timing probe;</text>
+<text x="328" y="587" class="t2" font-size="12" text-anchor="start">WebGPU vs JavaScript timing</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,566 l4,4 l8,-9"/>
+<text x="640" y="570" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="570" class="t2" font-size="12" text-anchor="start">device, precision, channels-last, workers,</text>
+<text x="698" y="587" class="t2" font-size="12" text-anchor="start">threads, batch size; jepa-studio bench</text>
+<rect class="band" x="12" y="596" width="976" height="50"/>
+<text x="28" y="625" class="t hdr" font-size="13" text-anchor="start">Export</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M250,616 l4,4 l8,-9"/>
+<text x="270" y="620" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="328" y="620" class="t2" font-size="12" text-anchor="start">embeddings (CSV, .npy), .safetensors,</text>
+<text x="328" y="637" class="t2" font-size="12" text-anchor="start">run report, zip</text>
+<path class="yes" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M620,616 l4,4 l8,-9"/>
+<text x="640" y="620" class="wyes" font-size="12" text-anchor="start" font-weight="700">Yes</text>
+<text x="698" y="620" class="t2" font-size="12" text-anchor="start">plus reproducibility bundle with SHA-256</text>
+<text x="698" y="637" class="t2" font-size="12" text-anchor="start">manifest (Ed25519 signing via sign-weights)</text>
+<line class="rule" x1="12" x2="988" y1="646" y2="646"/>
+<text x="20" y="670" class="t3" font-size="11" text-anchor="start">GPU paths are chosen by jepa_studio/hardware.py; the runs shipped in runs/ were trained on a 2-core CPU. The web tier never uploads your files</text>
+<text x="20" y="686" class="t3" font-size="11" text-anchor="start">(Content Security Policy allows only its own origin); the desktop backend binds to 127.0.0.1 only.</text>
+</svg>

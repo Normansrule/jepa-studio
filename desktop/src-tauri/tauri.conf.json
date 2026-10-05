@@ -1,0 +1,52 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "jepa-studio",
+  "version": "0.3.0",
+  "identifier": "io.github.normansrule.jepastudio",
+  "build": {
+    "frontendDist": "../../site"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "freezePrototype": true,
+      "dangerousDisableAssetCspModification": false,
+      "assetProtocol": { "enable": false }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis", "dmg", "app", "deb", "appimage"],
+    "publisher": "Aleksander Norman",
+    "copyright": "Copyright (c) 2026 Aleksander Norman. MIT License.",
+    "category": "Education",
+    "shortDescription": "Pretrain, inspect and use LeJEPA models on your own data",
+    "longDescription": "jepa-studio pretrains LeJEPA (JEPA + SIGReg) encoders on your own unlabeled data with a private PyTorch environment, shows what they learned, and plans with a learned world model.",
+    "homepage": "https://normansrule.github.io/jepa-studio/",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../jepa_studio/": "python/jepa_studio/",
+      "../../docs/": "python/docs/",
+      "../../README.md": "python/README.md"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["python3", "python3-venv"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  }
+}

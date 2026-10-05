@@ -1,0 +1,67 @@
+cff-version: 1.2.0
+message: "If you use jepa-studio, please cite it as below, and cite LeJEPA (and LeWorldModel if you use the world model)."
+title: "jepa-studio: pretrain, inspect and use LeJEPA models on your own unlabeled data"
+abstract: >-
+  An app and Python package to pretrain LeJEPA (JEPA + SIGReg) models on unlabeled images,
+  video or time series, inspect and evaluate their embeddings, and plan with a CEM planner
+  inside a learned latent world model, in the browser or on the desktop.
+type: software
+authors:
+  - family-names: Norman
+    given-names: Aleksander
+version: 0.3.0
+license: MIT
+repository-code: "https://github.com/Normansrule/jepa-studio"
+url: "https://normansrule.github.io/jepa-studio/"
+keywords:
+  - jepa
+  - lejepa
+  - self-supervised learning
+  - sigreg
+  - world model
+  - education
+references:
+  - type: article
+    title: "LeJEPA: Provable and Scalable Self-Supervised Learning Without the Heuristics"
+    authors:
+      - family-names: Balestriero
+        given-names: Randall
+      - family-names: LeCun
+        given-names: Yann
+    year: 2025
+    identifiers:
+      - type: other
+        value: "arXiv:2511.08544"
+    url: "https://arxiv.org/abs/2511.08544"
+  - type: article
+    title: "LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels"
+    authors:
+      - family-names: Maes
+        given-names: Lucas
+      - family-names: Le Lidec
+        given-names: Quentin
+      - family-names: Scieur
+        given-names: Damien
+      - family-names: LeCun
+        given-names: Yann
+      - family-names: Balestriero
+        given-names: Randall
+    year: 2026
+    identifiers:
+      - type: other
+        value: "arXiv:2603.19312"
+    url: "https://arxiv.org/abs/2603.19312"
+  - type: article
+    title: "A test for normality based on the empirical characteristic function"
+    authors:
+      - family-names: Epps
+        given-names: T. W.
+      - family-names: Pulley
+        given-names: Lawrence B.
+    journal: Biometrika
+    volume: 70
+    issue: 3
+    start: 723
+    end: 726
+    year: 1983
+    doi: 10.1093/biomet/70.3.723

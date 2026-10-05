@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Python: pyproject.toml and requirements-desktop.txt (the desktop app's pinned stack)
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Desktop shell: Tauri CLI (desktop/package.json + package-lock.json)
+  - package-ecosystem: npm
+    directory: "/desktop"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Desktop shell: Rust crates (desktop/src-tauri/Cargo.toml + Cargo.lock)
+  - package-ecosystem: cargo
+    directory: "/desktop/src-tauri"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Workflow actions (pinned by commit SHA; Dependabot updates the SHA and the version comment)
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

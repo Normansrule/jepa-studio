@@ -1,0 +1,65 @@
+{
+  "card": {
+    "os": "Linux 6.18.44-fc-v50",
+    "python": "3.11.15",
+    "torch": "2.14.0+cu130",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "cpu_cores_physical": 2,
+    "cpu_cores_logical": 2,
+    "ram_total_gb": 7.84,
+    "ram_available_gb": 6.94,
+    "accelerator": "cpu",
+    "device_name": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "device_memory_gb": null,
+    "bf16": true,
+    "fp16": false,
+    "compile_available": true,
+    "disk_free_gb": 21.7,
+    "disk_write_mb_s": 803.1,
+    "disk_read_mb_s": 6131.5,
+    "temps_c": {},
+    "notes": []
+  },
+  "decisions": [
+    {
+      "setting": "precision",
+      "value": "fp32",
+      "reason": "CPU: bf16 autocast is often slower on small convnets, keep fp32 (toggle to test)"
+    },
+    {
+      "setting": "channels_last",
+      "value": false,
+      "reason": "no benefit expected on this device/architecture"
+    },
+    {
+      "setting": "compile",
+      "value": false,
+      "reason": "set in config"
+    },
+    {
+      "setting": "workers",
+      "value": 1,
+      "reason": "2 physical cores, mode=balanced; CPU training shares cores with loading"
+    },
+    {
+      "setting": "pin_memory",
+      "value": false,
+      "reason": "only useful with a discrete GPU"
+    },
+    {
+      "setting": "torch_threads",
+      "value": 2,
+      "reason": "intra-op threads for mode=balanced"
+    },
+    {
+      "setting": "batch_size",
+      "value": 128,
+      "reason": "set in config"
+    },
+    {
+      "setting": "grad_accumulation",
+      "value": 1,
+      "reason": "effective batch 128x1=128 (target 128)"
+    }
+  ]
+}

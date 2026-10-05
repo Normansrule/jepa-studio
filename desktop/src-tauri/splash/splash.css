@@ -1,0 +1,69 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --ink: #172033;
+  --ink-2: #4a5468;
+  --line: #d9dde5;
+  --accent: #00897b;
+  --danger: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121826;
+    --surface: #1b2437;
+    --ink: #e8ecf4;
+    --ink-2: #aab3c5;
+    --line: #2e3a54;
+    --accent: #12b5a3;
+    --danger: #f2b8b5;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+main { padding: 22px 26px; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.glyph { width: 28px; height: 28px; }
+h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: 0.01em; }
+h2 { font-size: 14px; margin: 14px 0 6px; color: var(--danger); }
+#headline { margin: 0 0 10px; font-weight: 550; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+.bar.indeterminate span { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.line {
+  margin: 8px 0 0;
+  min-height: 1.4em;
+  color: var(--ink-2);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note { color: var(--ink-2); font-size: 12.5px; margin: 14px 0 0; }
+pre {
+  margin: 0;
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+code { user-select: text; -webkit-user-select: text; word-break: break-all; }
+@media (prefers-reduced-motion: reduce) {
+  .bar span { transition: none; }
+  .bar.indeterminate span { animation: none; width: 100%; opacity: 0.5; }
+}

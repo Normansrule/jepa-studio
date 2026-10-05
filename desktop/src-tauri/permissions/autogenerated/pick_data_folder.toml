@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-data-folder"
+description = "Enables the pick_data_folder command without any pre-configured scope."
+commands.allow = ["pick_data_folder"]
+
+[[permission]]
+identifier = "deny-pick-data-folder"
+description = "Denies the pick_data_folder command without any pre-configured scope."
+commands.deny = ["pick_data_folder"]

@@ -1,0 +1,342 @@
+{
+ "format": "jepa-studio-world-metrics/v1",
+ "seed": 0,
+ "envs": {
+  "two-room": {
+   "train_seconds": 133.8,
+   "data_seconds": 1.3,
+   "planning_eval_seconds": 4.0,
+   "params": 99568,
+   "hparams": {
+    "latent_dim": 16,
+    "enc_channels": [
+     16,
+     32,
+     32
+    ],
+    "enc_hidden": 128,
+    "pred_hidden": 64,
+    "pred_layers": 2,
+    "lam": 0.2,
+    "num_slices": 64,
+    "window": 6,
+    "batch": 48,
+    "steps": 3000,
+    "lr": 0.002,
+    "weight_decay": 0.0001,
+    "warmup": 100,
+    "threads": 2,
+    "val_frac": 0.1
+   },
+   "config_world": {
+    "env": "two-room",
+    "episodes": 400,
+    "episode_len": 24,
+    "history": 1,
+    "horizon": 5,
+    "cem_samples": 300,
+    "cem_elites": 30,
+    "cem_iters": 10
+   },
+   "prediction": {
+    "horizon": 5,
+    "model_mse": [
+     0.51931,
+     0.52559,
+     0.52677,
+     0.52588,
+     0.52672
+    ],
+    "copy_mse": [
+     0.97419,
+     1.24955,
+     1.43538,
+     1.50613,
+     1.56612
+    ],
+    "ratio": [
+     0.5331,
+     0.4206,
+     0.367,
+     0.3492,
+     0.3363
+    ],
+    "note": "open-loop k-step latent MSE on held-out episodes; copy = predict z_t for z_{t+k}"
+   },
+   "latent": {
+    "latent_std_mean": 0.9626,
+    "latent_std_min": 0.9113,
+    "effective_rank": 15.56,
+    "state_probe_r2": [
+     0.7846,
+     0.5812
+    ],
+    "collapsed": false
+   },
+   "planning": {
+    "episodes": 20,
+    "max_steps": 40,
+    "cost": "sum",
+    "cem": {
+     "horizon": 5,
+     "samples": 300,
+     "elites": 30,
+     "iters": 10
+    },
+    "cem_success_rate": 0.8,
+    "random_success_rate": 0.15,
+    "cem_mean_final_distance": 0.1435,
+    "random_mean_final_distance": 0.3802,
+    "mean_initial_distance": 0.4276,
+    "cem_mean_steps_success": 8.94,
+    "python_plan_ms": 11.5,
+    "seeds": [
+     10000,
+     10001,
+     10002,
+     10003,
+     10004,
+     10005,
+     10006,
+     10007,
+     10008,
+     10009,
+     10010,
+     10011,
+     10012,
+     10013,
+     10014,
+     10015,
+     10016,
+     10017,
+     10018,
+     10019
+    ],
+    "cem_success": [
+     true,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     true,
+     true,
+     true,
+     false,
+     true,
+     true,
+     true,
+     true,
+     true,
+     false,
+     true,
+     true,
+     true
+    ],
+    "random_success": [
+     false,
+     true,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     true,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     true
+    ],
+    "seconds": 4.0
+   },
+   "gif": {
+    "path": "assets/world-two-room.gif",
+    "start_seed": 10000,
+    "selection": "first CEM-solved planning-eval episode",
+    "success": true,
+    "steps": 4,
+    "bytes": 10759
+   },
+   "json_bytes": 1228619,
+   "weights_sha256": "620dc85598db78a402cb4a256939a90795c3b1fb02de4aef621127b3a9945a1e"
+  },
+  "push-block": {
+   "train_seconds": 104.2,
+   "data_seconds": 3.2,
+   "planning_eval_seconds": 8.1,
+   "params": 99568,
+   "hparams": {
+    "latent_dim": 16,
+    "enc_channels": [
+     16,
+     32,
+     32
+    ],
+    "enc_hidden": 128,
+    "pred_hidden": 64,
+    "pred_layers": 2,
+    "lam": 0.2,
+    "num_slices": 64,
+    "window": 8,
+    "batch": 32,
+    "steps": 3000,
+    "lr": 0.002,
+    "weight_decay": 0.0001,
+    "warmup": 100,
+    "threads": 2,
+    "val_frac": 0.1
+   },
+   "config_world": {
+    "env": "push-block",
+    "episodes": 800,
+    "episode_len": 24,
+    "history": 1,
+    "horizon": 5,
+    "cem_samples": 300,
+    "cem_elites": 30,
+    "cem_iters": 10
+   },
+   "prediction": {
+    "horizon": 5,
+    "model_mse": [
+     0.70368,
+     0.70121,
+     0.69126,
+     0.68342,
+     0.6833
+    ],
+    "copy_mse": [
+     1.20961,
+     1.48978,
+     1.57468,
+     1.63161,
+     1.69574
+    ],
+    "ratio": [
+     0.5817,
+     0.4707,
+     0.439,
+     0.4189,
+     0.403
+    ],
+    "note": "open-loop k-step latent MSE on held-out episodes; copy = predict z_t for z_{t+k}"
+   },
+   "latent": {
+    "latent_std_mean": 0.9714,
+    "latent_std_min": 0.9453,
+    "effective_rank": 15.81,
+    "state_probe_r2": [
+     0.7365,
+     0.7836,
+     0.1901,
+     0.3764
+    ],
+    "collapsed": false
+   },
+   "planning": {
+    "episodes": 20,
+    "max_steps": 40,
+    "cost": "sum",
+    "cem": {
+     "horizon": 5,
+     "samples": 300,
+     "elites": 30,
+     "iters": 10
+    },
+    "cem_success_rate": 0.25,
+    "random_success_rate": 0.0,
+    "cem_mean_final_distance": 0.1889,
+    "random_mean_final_distance": 0.1581,
+    "mean_initial_distance": 0.1511,
+    "cem_mean_steps_success": 3.8,
+    "python_plan_ms": 11.8,
+    "seeds": [
+     10000,
+     10001,
+     10002,
+     10003,
+     10004,
+     10005,
+     10006,
+     10007,
+     10008,
+     10009,
+     10010,
+     10011,
+     10012,
+     10013,
+     10014,
+     10015,
+     10016,
+     10017,
+     10018,
+     10019
+    ],
+    "cem_success": [
+     true,
+     false,
+     false,
+     false,
+     false,
+     false,
+     true,
+     false,
+     false,
+     false,
+     true,
+     true,
+     false,
+     false,
+     false,
+     true,
+     false,
+     false,
+     false,
+     false
+    ],
+    "random_success": [
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "seconds": 8.1
+   },
+   "gif": {
+    "path": "assets/world-push-block.gif",
+    "start_seed": 10000,
+    "selection": "first CEM-solved planning-eval episode",
+    "success": true,
+    "steps": 5,
+    "bytes": 13321
+   },
+   "json_bytes": 1249502,
+   "weights_sha256": "943e72ea8ec3bfc7d2e5cf532588660c3306fe14203cb2e9ec2ca4a1bc2a9685"
+  }
+ }
+}

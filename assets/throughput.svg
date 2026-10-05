@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 780 522" width="780" height="522" role="img" aria-labelledby="t d"><title id="t">Training throughput by auto-tuning stage</title><desc id="d">Desktop: samples per second of a LeJEPA training step as each automatic setting is switched on (Baseline: fp32, batch 32, no loader workers: 202.5, + batch size 128: 199.7, + 1 data-loader worker process: 195.3; median of 3 repeats). Web: first-layer time, JavaScript 45.2 ms vs WebGPU 569.9 ms.</desc><style>:root{--view:#00897b;--encoder:#b86e00;--predictor:#5e3fc0;--pred:#3c8fe8;--sigreg:#d42f5f;--bg:#f5f6f8;--surface:#ffffff;--surface-2:#eef0f4;--ink:#172033;--ink-2:#4a5468;--ink-3:#636c7e;--line:#d9dde5;--line-strong:#aeb6c4;--good:#0b8a0b;--warn:#a86f00;--bad:#c43333;}
+@media (prefers-color-scheme: dark){:root{--view:#129e8e;--encoder:#c4850a;--predictor:#8a5ce0;--pred:#4196f0;--sigreg:#e84a66;--bg:#121826;--surface:#1b2437;--surface-2:#232e45;--ink:#e8ecf4;--ink-2:#b4bccb;--ink-3:#97a1b4;--line:#2e3a54;--line-strong:#4a587a;--good:#35c235;--warn:#fab219;--bad:#f06a6a;}}
+svg{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;}.bg{fill:var(--surface);stroke:var(--line);stroke-width:1}.t{fill:var(--ink)} .t2{fill:var(--ink-2)} .t3{fill:var(--ink-3)}.m{font-family:'Latin Modern Roman', 'CMU Serif', 'Computer Modern', Georgia, 'Times New Roman', serif;fill:var(--ink)} .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}.h{font-weight:600}.bar{fill:var(--ink-2)} .bar2{fill:var(--ink-3)} .grid{stroke:var(--line);stroke-width:1}.axis{stroke:var(--line-strong);stroke-width:1} .rep{fill:var(--surface);stroke:var(--ink);stroke-width:1.5}.num{font-variant-numeric:tabular-nums}</style><rect class="bg" x="0.5" y="0.5" width="779" height="521" rx="6"/>
+<text x="20" y="30" class="t" font-size="16" text-anchor="start" font-weight="600">Auto-tuning on a 2-core CPU: no measurable gain</text>
+<text x="20" y="50" class="t2" font-size="12" text-anchor="start">Machine (hardware card): Intel Xeon Processor @ 2.10GHz, 2 cores, 7.8 GB RAM, no GPU, PyTorch 2.14.0, Linux</text>
+<text x="20" y="80" class="t" font-size="12" text-anchor="start" font-weight="600">Desktop: samples/s of one LeJEPA training step (ConvNet-tiny, 6 views), as each setting is switched on</text>
+<line class="grid" x1="262.0" x2="262.0" y1="98" y2="222"/>
+<text x="262.0" y="238" class="t3 num" font-size="11" text-anchor="middle">0</text>
+<line class="grid" x1="349.6" x2="349.6" y1="98" y2="222"/>
+<text x="349.6" y="238" class="t3 num" font-size="11" text-anchor="middle">50</text>
+<line class="grid" x1="437.2" x2="437.2" y1="98" y2="222"/>
+<text x="437.2" y="238" class="t3 num" font-size="11" text-anchor="middle">100</text>
+<line class="grid" x1="524.8" x2="524.8" y1="98" y2="222"/>
+<text x="524.8" y="238" class="t3 num" font-size="11" text-anchor="middle">150</text>
+<line class="grid" x1="612.4" x2="612.4" y1="98" y2="222"/>
+<text x="612.4" y="238" class="t3 num" font-size="11" text-anchor="middle">200</text>
+<line class="grid" x1="700.0" x2="700.0" y1="98" y2="222"/>
+<text x="700.0" y="238" class="t3 num" font-size="11" text-anchor="middle">250</text>
+<text x="700" y="254" class="t3" font-size="11" text-anchor="end">samples per second (higher is better)</text>
+<text x="250" y="122.0" class="t" font-size="12" text-anchor="end">Baseline: fp32, batch 32, no loader workers</text>
+<path class="bar" d="M262,104 H613.8 q3,0 3,3 V129 q0,3 -3,3 H262 Z"/>
+<circle class="rep" cx="617.7" cy="118.0" r="3.5"/>
+<circle class="rep" cx="616.8" cy="118.0" r="3.5"/>
+<circle class="rep" cx="588.2" cy="118.0" r="3.5"/>
+<text x="627.656" y="122.0" class="t num" font-size="12" text-anchor="start" font-weight="600">202</text>
+<text x="250" y="164.0" class="t" font-size="12" text-anchor="end">+ batch size 128</text>
+<path class="bar" d="M262,146 H608.9 q3,0 3,3 V171 q0,3 -3,3 H262 Z"/>
+<circle class="rep" cx="611.9" cy="160.0" r="3.5"/>
+<circle class="rep" cx="605.6" cy="160.0" r="3.5"/>
+<circle class="rep" cx="626.4" cy="160.0" r="3.5"/>
+<text x="636.4159999999999" y="164.0" class="t num" font-size="12" text-anchor="start" font-weight="600">200</text>
+<text x="250" y="206.0" class="t" font-size="12" text-anchor="end">+ 1 data-loader worker process</text>
+<path class="bar" d="M262,188 H601.2 q3,0 3,3 V213 q0,3 -3,3 H262 Z"/>
+<circle class="rep" cx="604.2" cy="202.0" r="3.5"/>
+<circle class="rep" cx="615.0" cy="202.0" r="3.5"/>
+<circle class="rep" cx="603.1" cy="202.0" r="3.5"/>
+<text x="625.028" y="206.0" class="t num" font-size="12" text-anchor="start" font-weight="600">195</text>
+<line class="axis" x1="262" x2="262" y1="98" y2="222"/>
+<text x="20" y="274" class="t2" font-size="12" text-anchor="start">Bars: median of 3 runs of 12 timed steps; rings: each run. Every stage lands in the same 186–208 samples/s band: on this machine the</text>
+<text x="20" y="291" class="t2" font-size="12" text-anchor="start">tuner's choices (batch 128, 1 loader worker, fp32 kept) are speed-neutral within run-to-run noise.</text>
+<text x="20" y="334" class="t" font-size="12" text-anchor="start" font-weight="600">Web demo: time for the first layer at start-up (headless Chromium), lower is better</text>
+<line class="grid" x1="262.0" x2="262.0" y1="352" y2="434"/>
+<text x="262.0" y="450" class="t3 num" font-size="11" text-anchor="middle">0</text>
+<line class="grid" x1="335.0" x2="335.0" y1="352" y2="434"/>
+<text x="335.0" y="450" class="t3 num" font-size="11" text-anchor="middle">100</text>
+<line class="grid" x1="408.0" x2="408.0" y1="352" y2="434"/>
+<text x="408.0" y="450" class="t3 num" font-size="11" text-anchor="middle">200</text>
+<line class="grid" x1="481.0" x2="481.0" y1="352" y2="434"/>
+<text x="481.0" y="450" class="t3 num" font-size="11" text-anchor="middle">300</text>
+<line class="grid" x1="554.0" x2="554.0" y1="352" y2="434"/>
+<text x="554.0" y="450" class="t3 num" font-size="11" text-anchor="middle">400</text>
+<line class="grid" x1="627.0" x2="627.0" y1="352" y2="434"/>
+<text x="627.0" y="450" class="t3 num" font-size="11" text-anchor="middle">500</text>
+<line class="grid" x1="700.0" x2="700.0" y1="352" y2="434"/>
+<text x="700.0" y="450" class="t3 num" font-size="11" text-anchor="middle">600</text>
+<text x="700" y="466" class="t3" font-size="11" text-anchor="end">milliseconds</text>
+<text x="250" y="376.0" class="t" font-size="12" text-anchor="end">JavaScript on the CPU</text>
+<path class="bar2" d="M262,358 H292.0 q3,0 3,3 V383 q0,3 -3,3 H262 Z"/>
+<text x="304.9959999999094" y="376.0" class="t num" font-size="12" text-anchor="start" font-weight="600">45.2 ms · kept</text>
+<text x="250" y="418.0" class="t" font-size="12" text-anchor="end">WebGPU (swiftshader software adapter)</text>
+<path class="bar2" d="M262,400 H675.0 q3,0 3,3 V425 q0,3 -3,3 H262 Z"/>
+<text x="668.002666666576" y="418.0" class="num" font-size="12" text-anchor="end" font-weight="600" fill="var(--surface)">569.9 ms · rejected</text>
+<line class="axis" x1="262" x2="262" y1="352" y2="434"/>
+<text x="20" y="486" class="t2" font-size="12" text-anchor="start">The app times both paths and keeps the faster one: the software WebGPU adapter was 12.6× slower, so the demo trained with</text>
+<text x="20" y="503" class="t2" font-size="12" text-anchor="start">JavaScript at 144.2 samples/s. Data: assets/throughput-benchmark.json, assets/screens/headless-benchmark.json.</text>
+</svg>

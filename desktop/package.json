@@ -1,0 +1,13 @@
+{
+  "name": "jepa-studio-desktop",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Tauri 2 desktop shell for jepa-studio (the front end is ../site, no build step)",
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.0"
+  }
+}

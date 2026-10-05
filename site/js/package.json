@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Marks site/js as ES modules so the same files load in the browser and in Node tests (tests/js). No dependencies, no build step."
+}

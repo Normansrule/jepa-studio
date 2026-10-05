@@ -1,0 +1,28 @@
+{
+  "n_labeled": 655,
+  "n_test": 1638,
+  "methods": {
+    "LeJEPA (this run)": {
+      "linear_probe": 0.4774114787578583,
+      "knn": 0.21001221239566803,
+      "effective_rank": 15.324,
+      "sigreg": 58.4828,
+      "collapse": "healthy"
+    },
+    "random-init encoder": {
+      "linear_probe": 0.1794871836900711,
+      "knn": 0.12759463489055634,
+      "effective_rank": 2.639,
+      "sigreg": 3299.3713,
+      "collapse": "complete-collapse"
+    },
+    "supervised (655 labels)": {
+      "linear_probe": 0.9114773869514465,
+      "knn": 0.9157509207725525,
+      "effective_rank": 7.713,
+      "sigreg": 2387.9521,
+      "collapse": "healthy"
+    }
+  },
+  "chance": 0.1
+}

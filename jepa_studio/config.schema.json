@@ -1,0 +1,483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jepa-studio/run-config/v1",
+  "title": "jepa-studio run config",
+  "description": "One file format shared by the web app and the desktop app. A config saved in the browser opens unchanged on desktop. Unknown keys are rejected so typos never silently do nothing.",
+  "type": "object",
+  "required": [
+    "version",
+    "name",
+    "seed",
+    "data",
+    "model",
+    "objective",
+    "train",
+    "hardware",
+    "eval",
+    "world"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$",
+      "description": "Also the run folder name: letters, digits, '.', '_' and '-' only (no path separators)."
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "image_size",
+        "local_size",
+        "n_global",
+        "n_local"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "synthetic-shapes",
+            "images",
+            "video",
+            "timeseries"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 5000000
+        },
+        "image_size": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 512
+        },
+        "local_size": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 512
+        },
+        "channels": {
+          "type": "integer",
+          "enum": [
+            1,
+            3
+          ]
+        },
+        "n_global": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "n_local": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "global_scale": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 1.0
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "local_scale": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 1.0
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "flip_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "color_jitter": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "grayscale_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blur_p": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "mask_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.95
+        },
+        "labeled_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "clip_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "series_window": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 4096
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arch",
+        "embed_dim",
+        "proj_dim"
+      ],
+      "properties": {
+        "arch": {
+          "type": "string",
+          "enum": [
+            "mlp-tiny",
+            "convnet-tiny",
+            "convnet-small",
+            "vit-tiny",
+            "video-convnet",
+            "series-conv"
+          ]
+        },
+        "embed_dim": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 4096
+        },
+        "proj_dim": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1024
+        },
+        "proj_hidden": {
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 8192
+        },
+        "patch_size": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
+        "heads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lambda",
+        "num_slices",
+        "t_max",
+        "knots"
+      ],
+      "properties": {
+        "lambda": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "num_slices": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "t_max": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 10
+        },
+        "knots": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 257
+        }
+      }
+    },
+    "train": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "epochs",
+        "batch_size",
+        "lr"
+      ],
+      "properties": {
+        "epochs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "max_steps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "batch_size": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 65536
+            },
+            {
+              "const": "auto"
+            }
+          ]
+        },
+        "effective_batch": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 2,
+          "maximum": 1048576
+        },
+        "lr": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "weight_decay": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "warmup_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.5
+        },
+        "final_lr_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "checkpoint_every": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "log_every": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "max",
+            "balanced",
+            "quiet"
+          ]
+        },
+        "device": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cpu",
+            "cuda",
+            "mps",
+            "webgpu",
+            "wasm"
+          ]
+        },
+        "precision": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fp32",
+            "bf16",
+            "fp16"
+          ]
+        },
+        "channels_last": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "auto"
+            }
+          ]
+        },
+        "compile": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "auto"
+            }
+          ]
+        },
+        "workers": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            {
+              "const": "auto"
+            }
+          ]
+        },
+        "pin_memory": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "auto"
+            }
+          ]
+        },
+        "max_memory_frac": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 0.95
+        },
+        "max_temp_c": {
+          "type": "number",
+          "minimum": 50,
+          "maximum": 100
+        },
+        "max_disk_gb": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10000
+        }
+      }
+    },
+    "eval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "knn_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "probe_epochs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "baselines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "random-init",
+              "supervised"
+            ]
+          }
+        }
+      }
+    },
+    "world": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string",
+          "enum": [
+            "two-room",
+            "push-block"
+          ]
+        },
+        "episodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "episode_len": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 1000
+        },
+        "history": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "horizon": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cem_samples": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 10000
+        },
+        "cem_elites": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "cem_iters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    }
+  }
+}

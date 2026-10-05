@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jepa-studio"
+version = "0.3.0"
+description = "Pretrain, inspect and use LeJEPA (JEPA + SIGReg) models on your own unlabeled data, with a planning bot in a learned world model."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Aleksander Norman" }]
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.3",
+  "torchvision>=0.18",
+  "numpy>=1.26",
+  "safetensors>=0.4",
+  "pillow>=10.3",
+  "psutil>=5.9",
+  "cryptography>=42",
+  "imageio>=2.34",
+]
+keywords = ["jepa", "lejepa", "self-supervised learning", "world model", "sigreg", "education"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+]
+
+[project.optional-dependencies]
+video = ["imageio-ffmpeg>=0.5"]
+onnx = ["onnx>=1.16", "onnxscript>=0.3", "onnxruntime>=1.18"]
+assistant = ["llama-cpp-python>=0.2"]
+dev = ["pytest>=8", "playwright>=1.44", "ruff>=0.5"]
+
+[project.scripts]
+jepa-studio = "jepa_studio.cli:main"
+
+[project.urls]
+Homepage = "https://normansrule.github.io/jepa-studio/"
+Source = "https://github.com/Normansrule/jepa-studio"
+
+[tool.setuptools.packages.find]
+include = ["jepa_studio*"]
+
+[tool.setuptools.package-data]
+jepa_studio = ["config.schema.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: longer end-to-end tests"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["desktop/src-tauri/target", "desktop/node_modules", "ref"]
+
+[tool.ruff.lint]
+ignore = ["E741"]  # short math names (l, I) mirror the papers' notation

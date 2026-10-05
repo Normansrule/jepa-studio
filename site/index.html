@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>jepa-studio</title>
+<meta name="description" content="Pretrain, inspect and use LeJEPA self-supervised models on your own unlabeled data. Runs in the browser as a demo, or on your machine with the desktop app.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/landing.js"></script>
+</head>
+<body class="landing">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <a class="wordmark" href="index.html" aria-label="jepa-studio home">
+    <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="12" r="4" fill="currentColor"/><path d="M11 12h2" stroke="currentColor" stroke-width="2"/></svg>
+    <span class="name">jepa<i>-studio</i></span>
+  </a>
+  <span class="header-spacer"></span>
+  <a href="#how">How it works</a>
+  <a href="#what">What is a JEPA</a>
+  <a href="#tiers">Web or desktop</a>
+  <a href="#download">Download</a>
+  <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch to dark theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <div>
+      <h1>Teach a model to see, without a single label.</h1>
+      <p class="lede">Pretrain a LeJEPA encoder on your own unlabeled images, watch it learn, and check what it learned. This page trains a small demo model in your browser; the desktop app trains real ones with PyTorch on your CPU or GPU.</p>
+      <div class="cta">
+        <a class="btn primary" href="app.html#train">Train in the browser</a>
+        <a class="btn" href="#download">Get the desktop app</a>
+      </div>
+    </div>
+    <figure class="hero-figure" aria-labelledby="hero-cap">
+      <div class="equation" aria-label="L equals one minus lambda times L pred plus lambda times L SIGReg">
+        <var>L</var> = (1 − <var>λ</var>) <span class="term t-pred"><var>L</var><sub>pred</sub></span> + <var>λ</var> <span class="term t-sig"><var>L</var><sub>SIGReg</sub></span>
+      </div>
+      <canvas id="hero-canvas" role="img" aria-label="Histogram of embeddings projected on one random direction, moving from a collapsed spike to a standard Gaussian while the Epps-Pulley statistic falls"></canvas>
+      <figcaption id="hero-cap"><span>One random projection of a batch of embeddings, against N(0, 1). SIGReg's Epps–Pulley statistic: <b id="hero-ep">–</b></span><button class="btn" id="hero-replay" type="button">Replay</button></figcaption>
+    </figure>
+  </section>
+
+  <section class="section how" id="how" aria-labelledby="how-title">
+    <h2 id="how-title">How it works</h2>
+    <ol class="how-steps">
+      <li>
+        <span class="how-n" aria-hidden="true">1</span>
+        <h3><a href="app.html#data">Load data</a></h3>
+        <p>Start with the built-in Shapes, or drop a folder of your own images. Files are decoded in the page and never uploaded.</p>
+      </li>
+      <li>
+        <span class="how-n" aria-hidden="true">2</span>
+        <h3><a href="app.html#train">Train</a></h3>
+        <p>Pick a preset and press Start. In the browser a 218k-parameter demo model trains in about a minute; the desktop app trains real encoders with PyTorch from the same config file.</p>
+      </li>
+      <li>
+        <span class="how-n" aria-hidden="true">3</span>
+        <h3><a href="app.html#inspect">See what it learned</a></h3>
+        <p>Rotate the embedding cloud, check the collapse detector, find nearest neighbours, then score it with a few labels.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="section" id="what" aria-labelledby="what-title">
+    <h2 id="what-title">What a JEPA learns</h2>
+    <p class="sub">A joint-embedding predictive architecture never reconstructs pixels. It learns an embedding in which different views of the same thing land close together, and LeJEPA adds one rule that keeps that embedding from cheating.</p>
+    <div class="explain-cols">
+      <div class="c-view"><div class="rule"></div><h3>Views</h3><p>Each image is cropped, recoloured and flipped into two large global views and several small local views. They share content, not pixels.</p></div>
+      <div class="c-pred"><div class="rule"></div><h3>Predict the centre</h3><p>The encoder maps every view to a vector. The prediction loss pulls each vector toward the mean of the global views: whatever survives cropping is what matters.</p></div>
+      <div class="c-sig"><div class="rule"></div><h3>Stay Gaussian</h3><p>Agreement alone is solved by mapping everything to one point. SIGReg tests random 1-D projections of the batch against N(0, 1), so the embedding must stay spread out and isotropic.</p></div>
+    </div>
+    <figure class="flow-figure" aria-labelledby="flow-cap">
+      <svg viewBox="0 0 960 190" role="img" aria-labelledby="flow-cap">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="f-arrow"/></marker></defs>
+        <rect x="10" y="20" width="150" height="60" rx="6" class="box s-view"/><text x="85" y="46" text-anchor="middle" class="lbl">Global views</text><text x="85" y="66" text-anchor="middle">2 large crops</text>
+        <rect x="10" y="110" width="150" height="60" rx="6" class="box s-view"/><text x="85" y="136" text-anchor="middle" class="lbl">Local views</text><text x="85" y="156" text-anchor="middle">4+ small crops</text>
+        <rect x="230" y="65" width="150" height="60" rx="6" class="box s-encoder"/><text x="305" y="91" text-anchor="middle" class="lbl">Encoder</text><text x="305" y="111" text-anchor="middle">shared weights</text>
+        <rect x="450" y="65" width="150" height="60" rx="6" class="box s-predictor"/><text x="525" y="91" text-anchor="middle" class="lbl">Projector</text><text x="525" y="111" text-anchor="middle">embedding z</text>
+        <rect x="680" y="20" width="270" height="60" rx="6" class="box s-pred"/><text x="815" y="46" text-anchor="middle" class="lbl">L_pred</text><text x="815" y="66" text-anchor="middle">every view → centre of global views</text>
+        <rect x="680" y="110" width="270" height="60" rx="6" class="box s-sig"/><text x="815" y="136" text-anchor="middle" class="lbl">L_SIGReg</text><text x="815" y="156" text-anchor="middle">random projections → N(0, 1)</text>
+        <path d="M160 50 C195 50 195 85 228 88" class="edge" marker-end="url(#arr)"/>
+        <path d="M160 140 C195 140 195 105 228 102" class="edge" marker-end="url(#arr)"/>
+        <path d="M380 95 L448 95" class="edge" marker-end="url(#arr)"/>
+        <path d="M600 88 C640 88 640 50 678 50" class="edge" marker-end="url(#arr)"/>
+        <path d="M600 102 C640 102 640 140 678 140" class="edge" marker-end="url(#arr)"/>
+      </svg>
+      <figcaption id="flow-cap" class="hint">The same colours mark views, encoder, projector and the two loss terms everywhere in the app and the docs.</figcaption>
+    </figure>
+  </section>
+
+  <section class="section" id="tiers" aria-labelledby="tiers-title">
+    <h2 id="tiers-title">In the browser, or on your machine</h2>
+    <p class="sub">The website is the same app as the desktop build. In a browser it trains a small demo model locally; the desktop app runs full PyTorch training on your CPU or GPU.</p>
+    <div class="table-wrap">
+      <table class="cap-table">
+        <thead><tr><th scope="col">Capability</th><th scope="col">Web demo (this site)</th><th scope="col">Desktop app</th></tr></thead>
+        <tbody id="cap-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="download" aria-labelledby="download-title">
+    <h2 id="download-title">Download</h2>
+    <p class="sub">Installers are built by CI and attached to each GitHub release, with SHA-256 checksums. The app only listens on 127.0.0.1 and never uploads your data.</p>
+    <div class="downloads">
+      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>Windows</b><span>.msi installer, x64</span></a>
+      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>macOS</b><span>.dmg, Apple silicon and Intel</span></a>
+      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>Linux</b><span>.AppImage and .deb</span></a>
+    </div>
+    <pre class="cli" aria-label="Command line install">pip install jepa-studio
+jepa-studio train --config configs/shapes-quickstart.json
+jepa-studio serve        # the same UI, backed by PyTorch</pre>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <span>jepa-studio. Method: Balestriero &amp; LeCun, <a href="https://arxiv.org/abs/2511.08544">LeJEPA</a> (2025). Fonts: Latin Modern (GUST Font License).</span>
+  <span><a href="app.html">Open the app</a></span>
+</footer>
+</body>
+</html>

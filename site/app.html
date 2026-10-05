@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>jepa-studio app</title>
+<meta name="description" content="Pretrain, inspect and use LeJEPA models on your own unlabeled data, in the browser.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <a class="wordmark" href="index.html" aria-label="jepa-studio home">
+    <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="12" r="4" fill="currentColor"/><path d="M11 12h2" stroke="currentColor" stroke-width="2"/></svg>
+    <span class="name">jepa<i>-studio</i></span>
+  </a>
+  <span class="header-spacer"></span>
+  <span class="tier-badge" id="tier-badge" data-tier="web" title="Which engine runs your training">
+    <span class="dot" aria-hidden="true"></span><span id="tier-label">Web demo</span><span class="visually-hidden">tier</span>
+  </span>
+  <span class="tier-badge" id="backend-badge" title="Compute backend of the active engine"><span class="dot" aria-hidden="true"></span><strong id="backend-label">Checking…</strong></span>
+  <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch to dark theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+<nav class="tabbar" role="tablist" aria-label="Workflow">
+  <button role="tab" id="tab-data" data-tab="data" aria-controls="panel-data" aria-selected="true">Data</button>
+  <button role="tab" id="tab-train" data-tab="train" aria-controls="panel-train" aria-selected="false" tabindex="-1">Train<span class="tab-state" id="train-dot" data-on="false" aria-hidden="true"></span></button>
+  <button role="tab" id="tab-inspect" data-tab="inspect" aria-controls="panel-inspect" aria-selected="false" tabindex="-1">Inspect</button>
+  <button role="tab" id="tab-evaluate" data-tab="evaluate" aria-controls="panel-evaluate" aria-selected="false" tabindex="-1">Evaluate</button>
+  <button role="tab" id="tab-world" data-tab="world" aria-controls="panel-world" aria-selected="false" tabindex="-1">World model</button>
+  <button role="tab" id="tab-explain" data-tab="explain" aria-controls="panel-explain" aria-selected="false" tabindex="-1">Explain</button>
+  <button role="tab" id="tab-export" data-tab="export" aria-controls="panel-export" aria-selected="false" tabindex="-1">Export</button>
+</nav>
+
+<main id="main">
+<nav class="stepper-bar" aria-label="Progress through the workflow">
+  <ol class="stepper" id="stepper">
+    <li data-step="data" data-state="upcoming"><button type="button" data-goto="data"><span class="mark" aria-hidden="true"><span class="n">1</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Data</span><span class="visually-hidden state"></span></button></li>
+    <li data-step="trained" data-state="upcoming"><button type="button" data-goto="train"><span class="mark" aria-hidden="true"><span class="n">2</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Train</span><span class="visually-hidden state"></span></button></li>
+    <li data-step="inspected" data-state="upcoming"><button type="button" data-goto="inspect"><span class="mark" aria-hidden="true"><span class="n">3</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Inspect</span><span class="visually-hidden state"></span></button></li>
+    <li data-step="evaluated" data-state="upcoming"><button type="button" data-goto="evaluate"><span class="mark" aria-hidden="true"><span class="n">4</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Evaluate</span><span class="visually-hidden state"></span></button></li>
+    <li data-step="exported" data-state="upcoming"><button type="button" data-goto="export"><span class="mark" aria-hidden="true"><span class="n">5</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Export</span><span class="visually-hidden state"></span></button></li>
+  </ol>
+  <p class="stepper-hint" id="stepper-hint"></p>
+</nav>
+
+<!-- ============================================================== DATA -->
+<section role="tabpanel" id="panel-data" aria-labelledby="tab-data" tabindex="0">
+  <div class="tab-intro">
+    <div>
+      <h2>Data and views</h2>
+      <p>A JEPA learns by making different views of the same input agree in embedding space. Pick data, then look at the views it will train on.</p>
+    </div>
+    <div class="pipeline" aria-label="What the model sees">
+      <div class="stage c-view"><b>Views</b><span>crops, jitter, flips</span></div><span class="arrow" aria-hidden="true">›</span>
+      <div class="stage c-encoder"><b>Encoder</b><span>mlp-tiny</span></div><span class="arrow" aria-hidden="true">›</span>
+      <div class="stage c-predictor"><b>Projector</b><span>16-d output</span></div><span class="arrow" aria-hidden="true">›</span>
+      <div class="stage c-pred"><b>Prediction</b><span>views agree</span></div>
+      <div class="stage c-sig"><b>SIGReg</b><span>stay Gaussian</span></div>
+    </div>
+  </div>
+  <div class="layout">
+    <div class="panel controls">
+      <fieldset>
+        <legend>Dataset</legend>
+        <div class="seg" role="radiogroup" aria-label="Dataset">
+          <label><input type="radio" name="dataset" value="shapes" checked><span>Shapes</span></label>
+          <label><input type="radio" name="dataset" value="images"><span>My images</span></label>
+          <label><input type="radio" name="dataset" value="series"><span>Time series</span></label>
+          <label class="desktop-only" hidden><input type="radio" name="dataset" value="video"><span>Video</span></label>
+        </div>
+      </fieldset>
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-labelledby="dropzone-title" aria-describedby="dropzone-hint">
+        <svg class="dz-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7.5 8.5L12 4l4.5 4.5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>
+        <span class="dz-text"><span class="dz-title" id="dropzone-title">Use your own images: drop them here</span>
+        <span class="hint" id="dropzone-hint">A folder works too. Or paste an image, or press Enter to choose files.</span></span>
+      </div>
+      <div id="data-shapes" class="ctl-section" aria-labelledby="shapes-title" role="group">
+        <div class="section-head"><h4 id="shapes-title">Shapes</h4><button class="link-btn" type="button" data-reset="data-shapes" aria-label="Reset the Shapes settings to their defaults">Reset to defaults</button></div>
+        <div class="field">
+          <label for="shapes-n" data-help="shapes-n">Images to generate</label>
+          <div class="row"><input id="shapes-n" type="range" min="256" max="4096" step="256" value="2048"></div>
+        </div>
+        <div class="field">
+          <label for="data-seed" data-help="data-seed">Seed</label>
+          <input id="data-seed" type="number" min="0" max="4294967295" step="1" value="0">
+        </div>
+        <p class="hint">Ten procedurally drawn classes (circle, ring, stripes…). Labels are hidden from pretraining and only used by Evaluate.</p>
+      </div>
+      <div id="data-images" hidden>
+        <div class="field">
+          <span class="label">Image files</span>
+          <div class="btn-row">
+            <label class="btn file-btn">Choose images…<input id="image-files" type="file" accept="image/*" multiple aria-label="Choose image files"></label>
+            <label class="btn file-btn">Choose a folder…<input id="image-folder" type="file" webkitdirectory multiple aria-label="Choose a folder of images"></label>
+          </div>
+        </div>
+        <p class="hint">Files stay on this device: they are decoded in the page and never uploaded. Limits: 2000 files, 20 MB each, 40 megapixels each. Images are resized to 32×32 for training.</p>
+        <p class="hint">Pick a folder of class sub-folders (cats/, dogs/…) and the sub-folder names become labels for Evaluate. Loose files have no labels.</p>
+        <div class="field desktop-only" hidden>
+          <span class="label">Train on a folder (desktop)</span>
+          <button class="btn" type="button" id="desktop-folder-images">Use a folder on this computer…</button>
+          <p class="hint">The desktop backend reads the folder directly at full size; only folders you pick here are readable.</p>
+        </div>
+      </div>
+      <div id="data-video" hidden>
+        <div class="field">
+          <span class="label">Folder of short clips</span>
+          <button class="btn" type="button" id="desktop-folder-video">Use a folder on this computer…</button>
+        </div>
+        <p class="hint">Desktop only. Short clips (.mp4, .webm, .gif…); frames, resolution and file size are capped while decoding. Sub-folder names become labels for Evaluate.</p>
+      </div>
+      <div id="data-series" class="ctl-section" hidden>
+        <div class="field">
+          <span class="label">CSV of numbers</span>
+          <label class="btn file-btn">Choose CSV…<input id="csv-file" type="file" accept=".csv,.txt,text/csv" aria-label="Choose a CSV file"></label>
+        </div>
+        <div class="field">
+          <label for="series-window" data-help="series-window">Window length</label>
+          <input id="series-window" type="number" min="8" max="4096" step="1" value="128">
+        </div>
+        <p class="hint">Numbers only, one column per channel, optional header row. The web demo previews series views; training on series needs the desktop app.</p>
+        <div class="field desktop-only" hidden>
+          <span class="label">Train on a folder of CSV files (desktop)</span>
+          <button class="btn" type="button" id="desktop-folder-series">Use a folder on this computer…</button>
+        </div>
+      </div>
+      <div id="data-status" class="notice" role="status" aria-live="polite">Shapes: 2048 images, generated in your browser.</div>
+      <div class="ctl-section" role="group" aria-labelledby="aug-title">
+        <div class="section-head"><h4 id="aug-title">Augmentations</h4><button class="link-btn" type="button" data-reset="data-aug" aria-label="Reset the augmentations to their defaults">Reset to defaults</button></div>
+        <div class="field"><label for="aug-jitter" data-help="aug-jitter">Colour jitter</label><div class="row"><input id="aug-jitter" type="range" min="0" max="1" step="0.05" value="0.4"></div></div>
+        <div class="field"><label for="aug-gray" data-help="aug-gray">Grayscale probability</label><div class="row"><input id="aug-gray" type="range" min="0" max="1" step="0.05" value="0.2"></div></div>
+        <div class="field"><label for="aug-flip" data-help="aug-flip">Flip probability</label><div class="row"><input id="aug-flip" type="range" min="0" max="1" step="0.05" value="0.5"></div></div>
+        <div class="field"><label for="aug-mask" data-help="aug-mask">Block mask ratio</label><div class="row"><input id="aug-mask" type="range" min="0" max="0.7" step="0.05" value="0"></div></div>
+      </div>
+      <button class="btn primary" id="regen-views" type="button">Regenerate views</button>
+      <p class="why" id="regen-views-why" hidden></p>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Views of one input</h3><span class="hint" id="views-caption">Image 0</span></div>
+        <div class="view-groups" id="view-groups">
+          <div><h4>Original</h4><div class="view-strip" id="view-original"></div></div>
+          <div><h4>2 global crops <span class="hint">30–100% of the image, 32 px</span></h4><div class="view-strip" id="view-globals"></div></div>
+          <div><h4>4 local crops <span class="hint">5–30% of the image, 16 px</span></h4><div class="view-strip" id="view-locals"></div></div>
+        </div>
+        <p class="hint">Every view is predicted to land on the mean embedding of the global views. The encoder then sees each view resampled to 16×16.</p>
+      </div>
+      <div class="panel" id="series-panel" hidden>
+        <div class="panel-head"><h3>Time series preview</h3><span class="hint" id="series-caption"></span></div>
+        <div class="chart"><canvas id="series-canvas" aria-label="Time series preview plot"></canvas></div>
+        <div class="grid-2">
+          <div><div class="chart-title"><b>Global view</b><span>80–100% of the window</span></div><div class="chart"><canvas id="series-global" aria-label="Global view of the series"></canvas></div></div>
+          <div><div class="chart-title"><b>Local view</b><span>30–60%, half length</span></div><div class="chart"><canvas id="series-local" aria-label="Local view of the series"></canvas></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Dataset sample</h3><span class="hint">Click one to see its views</span></div>
+        <div class="thumb-grid" id="data-thumbs"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== TRAIN -->
+<section role="tabpanel" id="panel-train" aria-labelledby="tab-train" tabindex="0" hidden>
+  <div class="tab-intro">
+    <div>
+      <h2>Pretrain</h2>
+      <div class="equation" aria-label="L equals one minus lambda times L pred plus lambda times L SIGReg">
+        <var>L</var> = (1 − <var>λ</var>) <span class="term t-pred"><var>L</var><sub>pred</sub></span> + <var>λ</var> <span class="term t-sig"><var>L</var><sub>SIGReg</sub></span>
+      </div>
+      <p class="equation-note">Prediction pulls every view onto the global-view centre; SIGReg keeps the batch of embeddings an isotropic Gaussian so they cannot collapse.</p>
+    </div>
+  </div>
+  <div class="layout">
+    <div class="stack">
+      <div class="panel controls">
+        <div class="notice warn" id="tier-note"><strong>Demo tier.</strong> This trains a 218k-parameter MLP on 16×16 inputs in your browser. It shows the method working; for real models use the desktop app.</div>
+        <div class="field mt-m">
+          <div class="label-row preset-row" data-help="train-preset" data-help-name="Preset"><span class="label" id="preset-label">Preset</span><span class="preset-state" id="preset-state" hidden>Custom</span></div>
+          <div class="seg seg-fill" role="radiogroup" aria-labelledby="preset-label" aria-describedby="preset-desc" id="preset-seg">
+            <label><input type="radio" name="preset" value="quick"><span>Quick look</span></label>
+            <label><input type="radio" name="preset" value="balanced" checked><span>Balanced</span></label>
+            <label><input type="radio" name="preset" value="thorough"><span>Thorough</span></label>
+          </div>
+          <p class="hint" id="preset-desc" aria-live="polite"></p>
+        </div>
+        <div class="section-head"><h4 id="train-set-title">Run settings</h4><button class="link-btn" type="button" data-reset="train" aria-label="Reset the run settings to their defaults">Reset to defaults</button></div>
+        <div class="field">
+          <label for="train-steps" data-help="train-steps">Steps</label>
+          <div class="row"><input id="train-steps" type="range" min="20" max="2000" step="10" value="300"></div>
+        </div>
+        <div class="field">
+          <label for="train-lambda" data-help="train-lambda">λ (SIGReg weight)</label>
+          <div class="row"><input id="train-lambda" type="range" min="0" max="1" step="0.01" value="0.05"></div>
+        </div>
+        <div class="field">
+          <label for="train-lr" data-help="train-lr">Learning rate</label>
+          <select id="train-lr"><option value="0.0005">5e-4</option><option value="0.001">1e-3</option><option value="0.002" selected>2e-3</option><option value="0.004">4e-3</option></select>
+        </div>
+        <div class="field">
+          <label for="train-slices" data-help="train-slices">SIGReg directions per step</label>
+          <select id="train-slices"><option value="16">16</option><option value="64" selected>64</option><option value="256">256</option></select>
+        </div>
+        <div class="field">
+          <label for="train-batch" data-help="train-batch">Batch size</label>
+          <select id="train-batch"><option value="auto" selected>Auto (timing probe)</option><option value="16">16</option><option value="32">32</option><option value="64">64</option><option value="128">128</option></select>
+        </div>
+        <div class="label-row switch-row" data-help="train-gpu" data-help-name="Use WebGPU"><label class="switch"><input type="checkbox" id="train-gpu" checked> Use WebGPU when available</label></div>
+        <div class="btn-row mt-m">
+          <button class="btn primary" id="train-start" type="button">Start training</button>
+          <button class="btn" id="train-pause" type="button" disabled>Pause</button>
+          <button class="btn" id="train-stop" type="button" disabled>Stop</button>
+        </div>
+        <p class="why" id="train-start-why" hidden></p>
+        <div class="run-line"><span id="train-status" role="status" aria-live="polite">Not started</span><span id="train-step">0 / 300</span></div>
+        <div class="progress" aria-hidden="true"><div id="train-progress"></div></div>
+        <div class="next-step" id="train-next" hidden>
+          <p><strong>Run finished</strong> <span id="train-next-text"></span></p>
+          <div class="btn-row"><button class="btn primary" id="train-next-go" type="button">Inspect the embeddings →</button><button class="btn" id="train-next-dismiss" type="button">Dismiss</button></div>
+        </div>
+        <p class="hint mt-s">Differences from desktop: the web projector is Linear(64→64)+GELU+Linear(64→16) with no BatchNorm, GELU is the exact erf form, inputs are standardized per channel, and SIGReg uses fewer directions per step.</p>
+      </div>
+      <div class="panel hw-card" id="hardware-card" aria-labelledby="hw-title" aria-busy="true">
+        <div class="panel-head"><h3 id="hw-title">Hardware card</h3><button class="btn" id="hw-probe" type="button">Run timing probe</button></div>
+        <p class="loading" id="hw-loading"><span class="spinner" aria-hidden="true"></span><span>Reading this device: cores, memory and the WebGPU adapter…</span></p>
+        <dl class="kv" id="hw-kv" hidden></dl>
+        <div id="hw-decisions" class="hint"></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="grid-2">
+        <div class="panel"><div class="chart-title"><b>Total loss</b><span class="value" id="v-loss">–</span></div><div class="chart"><canvas id="c-loss" role="img" aria-label="Total loss by step"></canvas></div></div>
+        <div class="panel"><div class="chart-title"><b><span class="swatch c-pred"></span>Prediction term</b><span class="value" id="v-pred">–</span></div><div class="chart"><canvas id="c-pred" role="img" aria-label="Prediction loss by step"></canvas></div></div>
+        <div class="panel"><div class="chart-title"><b><span class="swatch c-sig"></span>SIGReg term</b><span class="value" id="v-sig">–</span></div><div class="chart"><canvas id="c-sig" role="img" aria-label="SIGReg statistic by step"></canvas></div><p class="hint">Dashed line: 1.05, the average value for a batch that really is Gaussian.</p></div>
+        <div class="panel"><div class="chart-title"><b>Learning rate</b><span class="value" id="v-lr">–</span></div><div class="chart"><canvas id="c-lr" role="img" aria-label="Learning rate schedule"></canvas></div><p class="hint">Linear warmup, then cosine decay.</p></div>
+        <div class="panel"><div class="chart-title"><b>Throughput</b><span class="value" id="v-sps">–</span></div><div class="chart"><canvas id="c-sps" role="img" aria-label="Samples per second"></canvas></div><p class="hint">Samples per second; each sample is 6 views.</p></div>
+        <div class="panel"><div class="chart-title"><b>JS heap</b><span class="value" id="v-heap">–</span></div><div class="chart"><canvas id="c-heap" role="img" aria-label="JavaScript heap in megabytes"></canvas></div><p class="hint" id="heap-note">Megabytes of JavaScript heap used by the page (Chromium only; the training worker has its own heap).</p></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Health during training</h3><span class="status-pill" id="train-collapse" data-status="idle">Waiting for the first check</span></div>
+        <dl class="metrics" id="train-iso"></dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== INSPECT -->
+<section role="tabpanel" id="panel-inspect" aria-labelledby="tab-inspect" tabindex="0" hidden>
+  <div class="tab-intro">
+    <div><h2>Inspect the embeddings</h2><p>Is the embedding cloud spread out and Gaussian, or has it collapsed? Explore it, then check the numbers.</p></div>
+    <div class="btn-row">
+      <div class="seg" role="radiogroup" aria-label="Embedding space">
+        <label><input type="radio" name="space" value="embedding" checked><span>Backbone (64-d)</span></label>
+        <label><input type="radio" name="space" value="projection"><span>Projector (16-d)</span></label>
+      </div>
+      <div class="seg" role="radiogroup" aria-label="Projection">
+        <label><input type="radio" name="dims" value="3d" checked><span>3D</span></label>
+        <label><input type="radio" name="dims" value="2d"><span>2D</span></label>
+      </div>
+      <button class="btn primary" id="inspect-refresh" type="button" aria-describedby="inspect-empty-text">Refresh from model</button>
+    </div>
+  </div>
+  <div class="empty-state" id="inspect-empty" data-empty-until="run">
+    <p id="inspect-empty-text"><strong>No model to inspect yet.</strong> Train one on the Train tab; the explorer, collapse detector and neighbours fill in from it.</p>
+    <button class="btn" type="button" data-goto="train">Go to Train</button>
+  </div>
+  <div class="layout">
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Collapse detector</h3></div>
+        <p class="status-pill" id="inspect-verdict" data-status="idle">No model yet</p>
+        <p class="hint" id="inspect-verdict-msg">Train for a few steps, then press Refresh.</p>
+        <dl class="metrics" id="inspect-metrics"></dl>
+      </div>
+      <div class="panel">
+        <div class="chart-title stacked"><b>Eigenvalue spectrum</b><span class="hint">covariance of the 16-d projector outputs</span></div>
+        <div class="chart tall"><canvas id="c-eigen" role="img" aria-label="Eigenvalues of the embedding covariance"></canvas></div>
+        <p class="hint">Isotropic means every bar the same height (dashed line = 1, the N(0, I) target).</p>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Embedding explorer</h3><span class="hint" id="pca-var">PCA of backbone embeddings</span></div>
+        <div class="scatter-wrap"><canvas id="scatter" aria-label="3D PCA scatter of embeddings. Drag or use arrow keys to rotate, click a point to find its neighbours."></canvas></div>
+        <div class="legend" id="scatter-legend" aria-label="Classes (click to isolate)"></div>
+        <p class="hint">Drag or use the arrow keys to rotate. Click a point for its nearest neighbours. Classes use five colours, drawn as filled dots or rings.</p>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h3>Nearest neighbours</h3><span class="hint">cosine, backbone</span></div>
+          <div id="nn-query" class="hint">Click a point or a thumbnail.</div>
+          <div class="nn-row" id="nn-row"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>Saliency</h3><span class="hint">|∂‖emb‖ / ∂pixel|</span></div>
+          <div class="saliency-pair" id="saliency"></div>
+          <p class="hint">Gradient of the embedding's length with respect to each pixel (largest over the colour channels), scaled from least to most important pixel: the stronger the tint, the more that pixel moves the embedding. Desktop runs with a ViT-tiny encoder add a third map: how much the last block's [CLS] token attends to each patch, averaged over heads.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Watch projections turn Gaussian</h3><span class="hint" id="anim-step">no snapshots yet</span></div>
+        <div class="grid-3">
+          <div class="chart"><div class="chart-title"><b>Direction 1</b></div><canvas id="h-0" role="img" aria-label="Histogram along fixed direction 1"></canvas></div>
+          <div class="chart"><div class="chart-title"><b>Direction 2</b></div><canvas id="h-1" role="img" aria-label="Histogram along fixed direction 2"></canvas></div>
+          <div class="chart"><div class="chart-title"><b>Direction 3</b></div><canvas id="h-2" role="img" aria-label="Histogram along fixed direction 3"></canvas></div>
+        </div>
+        <div class="field mt-s">
+          <label for="anim-slider">Training snapshot</label>
+          <div class="row"><button class="btn" id="anim-play" type="button">Play</button><input id="anim-slider" type="range" min="1" max="1" value="1" disabled></div>
+        </div>
+        <p class="hint">Projector outputs of 256 fixed images along 3 fixed random directions, recorded during training. The curve is N(0, 1): SIGReg pulls every such projection toward it. A narrow spike means the embedding has not spread out yet.</p>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Browse inputs</h3><span class="hint">click for neighbours and saliency</span></div>
+        <div class="thumb-grid" id="inspect-thumbs"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== EVALUATE -->
+<section role="tabpanel" id="panel-evaluate" aria-labelledby="tab-evaluate" tabindex="0" hidden>
+  <div class="tab-intro"><div><h2>Evaluate with a few labels</h2><p>Freeze the encoder, fit a linear probe and a k-NN classifier on a small labeled subset, and score a held-out split.</p></div></div>
+  <div class="empty-state" id="evaluate-empty" data-empty-until="run">
+    <p><strong>Nothing to evaluate yet.</strong> Train a model first, then score it here with a few labels.</p>
+    <button class="btn" type="button" data-goto="train">Go to Train</button>
+  </div>
+  <div class="layout">
+    <div class="panel controls">
+      <div class="section-head"><h4>Probe settings</h4><button class="link-btn" type="button" data-reset="eval" aria-label="Reset the probe settings to their defaults">Reset to defaults</button></div>
+      <div class="field">
+        <label for="eval-frac" data-help="eval-frac">Labeled fraction</label>
+        <div class="row"><input id="eval-frac" type="range" min="0.02" max="0.5" step="0.01" value="0.1"><output id="eval-frac-out" data-keep="true">10%</output></div>
+      </div>
+      <p class="hint">20% of the images are held out for scoring; the labeled subset comes from the rest.</p>
+      <ul class="hint list">
+        <li><b>Linear probe</b>: softmax regression on standardized features, full-batch Adam, 100 epochs.</li>
+        <li><b>k-NN</b>: cosine similarity, k = 20, majority vote, ties go to the nearest neighbour.</li>
+        <li><b>Random-init</b>: the same MLP, untrained.</li>
+        <li><b>Supervised</b>: the same MLP trained with cross-entropy on the same labeled subset.</li>
+      </ul>
+      <button class="btn primary" id="eval-run" type="button">Run evaluation</button>
+      <p class="why" id="eval-run-why" hidden></p>
+      <p class="hint" id="eval-status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Held-out accuracy</h3><span class="hint" id="eval-sub"></span></div>
+        <div class="chart tall"><canvas id="c-eval" role="img" aria-label="Grouped bar chart of held-out accuracy"></canvas></div>
+        <div class="legend"><span><span class="swatch" id="sw-probe"></span>Linear probe</span><span><span class="swatch" id="sw-knn"></span>k-NN (k = 20)</span><span>dashed line: chance</span></div>
+      </div>
+      <div class="panel table-wrap">
+        <table class="data" id="eval-table"><caption class="visually-hidden">Evaluation results</caption><thead><tr><th>Encoder</th><th class="num">Linear probe</th><th class="num">k-NN</th><th class="num">Effective rank</th><th class="num">SIGReg</th><th>Collapse check</th></tr></thead><tbody><tr><td colspan="6" class="hint">Run an evaluation to fill this table.</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== WORLD -->
+<section role="tabpanel" id="panel-world" aria-labelledby="tab-world" tabindex="0" hidden>
+  <div class="tab-intro"><div><h2>Plan in a learned world model</h2><p>A JEPA world model predicts the next embedding from the current one and an action. A planner searches for actions whose imagined embeddings reach the goal's embedding.</p></div></div>
+  <div class="layout">
+    <div class="panel controls">
+      <div class="section-head"><h4>Planner settings</h4><button class="link-btn" type="button" data-reset="world" aria-label="Reset the planner settings to their defaults">Reset to defaults</button></div>
+      <div class="field"><label for="world-env" data-help="world-env">Environment</label><select id="world-env"><option value="two-room">Two rooms: walk through the door</option><option value="push-block">Push block: move it to the target</option></select></div>
+      <div class="grid-2">
+        <div class="field"><label for="world-start" data-help="world-start">Start seed</label><input id="world-start" type="number" min="0" max="4294967295" step="1" value="1"></div>
+        <div class="field"><label for="world-goal" data-help="world-goal">Goal seed</label><input id="world-goal" type="number" min="0" max="4294967295" step="1" value="2"></div>
+      </div>
+      <div class="field"><label for="world-steps" data-help="world-steps">Max steps</label><div class="row"><input id="world-steps" type="range" min="5" max="60" step="1" value="30"></div></div>
+      <div class="field"><label for="world-samples" data-help="world-samples">CEM samples per iteration</label><select id="world-samples"><option value="100">100</option><option value="300" selected>300</option><option value="600">600</option></select></div>
+      <div class="btn-row"><button class="btn primary" id="world-run" type="button">Plan &amp; run</button><button class="btn" id="world-random" type="button">Random policy</button></div>
+      <p class="why" id="world-run-why" hidden></p>
+      <p class="hint" id="world-status" role="status" aria-live="polite">Loading world models…</p>
+      <dl class="kv" id="world-info"></dl>
+    </div>
+    <div class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Rollout</h3><span class="badge" id="world-badge" data-status="idle">Not run</span></div>
+        <div class="world-frames">
+          <figure class="bare"><canvas id="world-real" width="32" height="32" aria-label="Real environment frame"></canvas><figcaption class="hint">Real environment, step <span id="world-real-step">0</span></figcaption></figure>
+          <figure class="bare"><canvas id="world-imag" width="32" height="32" aria-label="Retrieved nearest real frame for the imagined embedding"></canvas><figcaption class="hint">Imagined end of the plan: retrieved nearest real frame. JEPAs predict embeddings, not pixels.</figcaption></figure>
+          <figure class="bare"><canvas id="world-goal-frame" width="32" height="32" aria-label="Goal frame"></canvas><figcaption class="hint">Goal</figcaption></figure>
+        </div>
+        <div class="field mt-s"><label for="world-scrub">Step</label><div class="row"><input id="world-scrub" type="range" min="0" max="0" step="1" value="0" disabled></div></div>
+        <div class="grid-2">
+          <div><div class="chart-title"><b>Real frames</b></div><div class="film" id="world-film-real"></div></div>
+          <div><div class="chart-title"><b>Imagined plan at this step (retrieved nearest real frames)</b></div><div class="film" id="world-film-imag"></div></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel"><div class="chart-title"><b><span class="swatch c-predictor"></span>CEM elite cost per iteration</b><span class="hint">at the selected step</span></div><div class="chart"><canvas id="c-cem" role="img" aria-label="CEM cost per iteration"></canvas></div></div>
+        <div class="panel"><div class="chart-title"><b>Distance to goal</b><span class="hint">planner vs random</span></div><div class="chart"><canvas id="c-dist" role="img" aria-label="Distance to goal per step, planner and random policy"></canvas></div><div class="legend" id="dist-legend"></div></div>
+      </div>
+      <div class="panel table-wrap"><table class="data" id="world-compare"><caption class="visually-hidden">Planner versus random policy</caption><thead><tr><th>Policy</th><th class="num">Steps</th><th class="num">Final distance</th><th>Reached goal</th></tr></thead><tbody><tr><td colspan="4" class="hint">Run the planner and the random policy to compare.</td></tr></tbody></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== EXPLAIN -->
+<section role="tabpanel" id="panel-explain" aria-labelledby="tab-explain" tabindex="0" hidden>
+  <div class="tab-intro"><div><h2>Explain</h2><p>Ask how something works. Answers are passages quoted from the project docs and your run log, with links to the source; nothing is generated.</p></div>
+    <label class="switch"><input type="checkbox" id="assistant-toggle"> Assistant panel</label>
+  </div>
+  <div id="assistant-off" class="notice">The assistant is off. Turn it on to search the documentation and this run's log. It only reads; it cannot press buttons or change settings.</div>
+  <div id="assistant-on" hidden>
+    <div class="layout">
+      <div class="panel controls">
+        <div class="field"><label for="assistant-q">Question</label><textarea id="assistant-q" rows="3" maxlength="500">Why does SIGReg prevent collapse?</textarea></div>
+        <button class="btn primary" id="assistant-ask" type="button">Search</button>
+        <p class="hint" id="assistant-mode"></p>
+        <div class="field mt-m"><span class="label">Run log (searched too)</span><pre class="logbox" id="assistant-log" aria-label="Run log"></pre></div>
+      </div>
+      <div class="stack"><div class="answers" id="assistant-answers" aria-live="polite"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== EXPORT -->
+<section role="tabpanel" id="panel-export" aria-labelledby="tab-export" tabindex="0" hidden>
+  <div class="tab-intro"><div><h2>Export</h2><p>Everything is written in your browser and saved with a normal download. Weights are safetensors: plain tensors, no code.</p></div></div>
+  <div class="empty-state" id="export-empty" data-empty-until="run">
+    <p><strong>Nothing trained to export yet.</strong> Train a model, or open saved weights below; the config and report are ready now.</p>
+    <button class="btn" type="button" data-goto="train">Go to Train</button>
+  </div>
+  <div class="grid-2">
+    <div class="panel">
+      <h3>Embeddings</h3>
+      <p class="hint">Backbone embeddings (64-d) of every item, in dataset order, with labels when the dataset has them.</p>
+      <div class="btn-row"><button class="btn" id="exp-csv" type="button">Download CSV</button><button class="btn" id="exp-npy" type="button">Download .npy</button></div>
+      <p class="why" id="exp-emb-why" hidden></p>
+    </div>
+    <div class="panel">
+      <h3>Trained weights</h3>
+      <p class="hint">mlp-tiny as <code>model.safetensors</code>: <code>backbone.net.*</code> loads into the desktop <code>MLPTiny</code>; input normalization is folded into the first layer, so it takes raw [0, 1] pixels.</p>
+      <div class="btn-row"><button class="btn" id="exp-weights" type="button">Download .safetensors</button><label class="btn file-btn">Open weights…<input id="imp-weights" type="file" accept=".safetensors" aria-label="Open a safetensors weights file"></label></div>
+      <p class="why" id="exp-weights-why" hidden></p>
+    </div>
+    <div class="panel">
+      <h3>Run report</h3>
+      <p class="hint">Config, metrics, evaluation, hardware card, seed, timestamps, browser and code version.</p>
+      <div class="btn-row"><button class="btn" id="exp-report-html" type="button">Download HTML</button><button class="btn" id="exp-report-json" type="button">Download JSON</button></div>
+    </div>
+    <div class="panel">
+      <h3>Reproducibility bundle</h3>
+      <p class="hint">A zip of <code>config.json</code>, <code>report.json</code>, <code>weights.safetensors</code>, <code>embeddings.npy</code> and a README with the desktop command.</p>
+      <button class="btn primary" id="exp-bundle" type="button">Download bundle (.zip)</button>
+      <p class="why" id="exp-bundle-why" hidden></p>
+    </div>
+    <div class="panel span-2 cfg-editor" id="cfg-panel">
+      <div class="panel-head"><h3 id="cfg-title">Run config</h3><span class="cfg-state" id="cfg-state" data-state="clean">Matches the Data and Train tabs</span></div>
+      <p class="hint">The same JSON file format as the desktop app, so a config made here opens there. Edit it, then Validate checks it against <code>config.schema.json</code> and Apply sends it to the Data and Train tabs.</p>
+      <label class="visually-hidden" for="cfg-text">Run config as JSON</label>
+      <textarea id="cfg-text" rows="16" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="cfg-result"></textarea>
+      <div class="notice warn cfg-confirm" id="cfg-confirm" hidden>
+        <p id="cfg-confirm-text"></p>
+        <div class="btn-row"><button class="btn primary" id="cfg-confirm-yes" type="button">Replace my edits</button><button class="btn" id="cfg-confirm-no" type="button">Keep editing</button></div>
+      </div>
+      <div class="btn-row mt-s">
+        <button class="btn" id="cfg-validate" type="button">Validate</button>
+        <button class="btn primary" id="cfg-apply" type="button">Apply</button>
+        <button class="btn" id="cfg-revert" type="button">Revert</button>
+        <button class="btn" id="cfg-save" type="button">Download</button>
+        <label class="btn file-btn">Open config…<input id="cfg-open" type="file" accept=".json,application/json" aria-label="Open a config file"></label>
+      </div>
+      <p class="why" id="cfg-save-why" hidden></p>
+      <div id="cfg-result" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+  <p class="hint" id="export-status" role="status" aria-live="polite"></p>
+</section>
+</main>
+
+<footer class="site-footer">
+  <span>jepa-studio <span id="app-version"></span>. Files you open never leave this device.</span>
+  <span><a href="index.html">About</a> · <a href="https://arxiv.org/abs/2511.08544">LeJEPA paper</a></span>
+</footer>
+</body>
+</html>

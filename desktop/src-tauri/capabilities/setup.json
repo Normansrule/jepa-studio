@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "setup",
+  "description": "The first-launch setup window (served from the jepa-setup: scheme): read the status and listen for progress events.",
+  "windows": ["setup"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-backend-status"
+  ]
+}

@@ -1,0 +1,43 @@
+[package]
+name = "jepa-studio"
+version = "0.3.0"
+description = "Desktop shell for jepa-studio: runs the local PyTorch backend and shows the site/ front end"
+authors = ["Aleksander Norman"]
+license = "MIT"
+repository = "https://github.com/Normansrule/jepa-studio"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+
+[[bin]]
+name = "jepa-studio"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "~2.7", features = [] }
+
+[dependencies]
+# Pinned to one minor line; the CLI (@tauri-apps/cli 2.12.x) must match this minor.
+tauri = { version = "~2.12", features = [] }
+tauri-plugin-dialog = "~2.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+base64 = "0.22"
+sha2 = "0.10"
+dunce = "1"
+# No tauri-plugin-shell, -fs or -http: the web view gets no shell, file system or network APIs.
+# (tauri-plugin-dialog links the tauri-plugin-fs crate for its FilePath type, but the fs plugin
+# is never registered, so none of its commands exist.)
+
+[features]
+# `cargo tauri build` turns this on; plain `cargo build` / `cargo run` also embed ../../site
+# because there is no devUrl.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

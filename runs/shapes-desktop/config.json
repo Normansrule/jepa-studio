@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "name": "shapes-desktop",
+  "seed": 0,
+  "data": {
+    "kind": "synthetic-shapes",
+    "path": null,
+    "max_items": 8192,
+    "image_size": 32,
+    "local_size": 16,
+    "channels": 3,
+    "n_global": 2,
+    "n_local": 4,
+    "global_scale": [
+      0.3,
+      1.0
+    ],
+    "local_scale": [
+      0.05,
+      0.3
+    ],
+    "flip_p": 0.5,
+    "color_jitter": 0.4,
+    "grayscale_p": 0.2,
+    "blur_p": 0.2,
+    "mask_ratio": 0.0,
+    "labeled_fraction": 0.1,
+    "clip_frames": 8,
+    "series_window": 128
+  },
+  "model": {
+    "arch": "convnet-tiny",
+    "embed_dim": 128,
+    "proj_dim": 16,
+    "proj_hidden": 256,
+    "patch_size": 4,
+    "depth": 4,
+    "heads": 4
+  },
+  "objective": {
+    "lambda": 0.05,
+    "num_slices": 256,
+    "t_max": 3.0,
+    "knots": 17
+  },
+  "train": {
+    "epochs": 12,
+    "max_steps": null,
+    "batch_size": 128,
+    "effective_batch": 128,
+    "lr": 0.002,
+    "weight_decay": 0.05,
+    "warmup_frac": 0.1,
+    "final_lr_ratio": 0.001,
+    "checkpoint_every": 200,
+    "log_every": 10
+  },
+  "hardware": {
+    "mode": "balanced",
+    "device": "auto",
+    "precision": "auto",
+    "channels_last": "auto",
+    "compile": false,
+    "workers": "auto",
+    "pin_memory": "auto",
+    "max_memory_frac": 0.85,
+    "max_temp_c": 85,
+    "max_disk_gb": 5
+  },
+  "eval": {
+    "knn_k": 20,
+    "probe_epochs": 100,
+    "baselines": [
+      "random-init",
+      "supervised"
+    ]
+  },
+  "world": {
+    "env": "two-room",
+    "episodes": 400,
+    "episode_len": 24,
+    "history": 1,
+    "horizon": 5,
+    "cem_samples": 300,
+    "cem_elites": 30,
+    "cem_iters": 10
+  }
+}
