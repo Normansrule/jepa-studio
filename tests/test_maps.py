@@ -34,10 +34,12 @@ def test_saliency_shape_range_determinism(arch):
     s = saliency(m, x)
     assert s.shape == (16, 16)
     assert torch.isfinite(s).all() and s.min() >= 0 and s.max() == pytest.approx(1.0)
-    assert torch.equal(s, saliency(m, x))
+    # repeatable; not bit-exact across CPU kernels/thread counts (seen on a 6-core AVX-512 machine)
+    assert torch.allclose(s, saliency(m, x), atol=1e-6)
     b = saliency(m, torch.stack([x, _img(2)]))
     assert b.shape == (2, 16, 16)
-    assert torch.allclose(b[0], s, atol=1e-5)  # eval mode: samples in a batch are independent
+    # eval mode: samples in a batch are independent (batched kernels may round differently)
+    assert torch.allclose(b[0], s, atol=1e-4)
     assert m.training and all(p.grad is None for p in m.parameters())  # mode restored, no grads left
 
 

@@ -20,7 +20,7 @@ import * as worldTab from './tabs/world.js';
 import * as explainTab from './tabs/explain.js';
 import * as exportTab from './tabs/export.js';
 
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.3.1';
 
 const tabs = { data: dataTab, train: trainTab, inspect: inspectTab, evaluate: evalTab, world: worldTab, explain: explainTab, export: exportTab };
 

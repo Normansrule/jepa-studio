@@ -30,7 +30,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 STUBS = {
-    "sudo": 'log sudo "$@"; exec "$@"',
+    # real sudo options (-n, -E, ...) are dropped so the stub works for non-root users too
+    "sudo": 'log sudo "$@"; while [ "${1#-}" != "${1:-}" ]; do shift; done; exec "$@"',
     "apt-get": 'log apt-get "$@"; exit "${STUB_APT_RC:-0}"',
     "dpkg-query": r"""log dpkg-query "$@"
 pkg="${!#}"

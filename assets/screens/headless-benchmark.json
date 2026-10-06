@@ -1,7 +1,7 @@
 {
   "backend": "CPU (JavaScript)",
-  "mean_samples_per_s": 234.20714285714288,
-  "seconds_for_30_steps": 5.064716339111328,
+  "mean_samples_per_s": 228.6214285714286,
+  "seconds_for_30_steps": 5.309173583984375,
   "loss_first5": 0.5878993475202325,
   "loss_last5": 0.4779978005957307,
   "webgpu_api": true,
@@ -12,10 +12,10 @@
       "architecture": "swiftshader",
       "description": ""
     },
-    "reason": "WebGPU adapter \"google swiftshader\" works but was slower than JavaScript on this layer (379.4 ms vs 25.2 ms); it is a software fallback adapter",
+    "reason": "WebGPU adapter \"google swiftshader\" works but was slower than JavaScript on this layer (343.9 ms vs 26.9 ms); it is a software fallback adapter",
     "speed": {
-      "gpuMs": 379.39999999990687,
-      "cpuMs": 25.199999999875825
+      "gpuMs": 343.9000000000039,
+      "cpuMs": 26.90000000000388
     }
   }
 }

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 (2026-10-05)
+
+**Fixed**
+- Desktop installers failed to build on every platform: the workflow passed `--ci` to
+  tauri-action, which forwards extra arguments to cargo (`unexpected argument '--ci'`).
+- `tests/test_setup_script.py` failed for non-root users (CI runners, your terminal): the fake
+  `sudo` did not understand `sudo -n`.
+- The ViT saliency test required bit-identical results; batched CPU attention kernels on some
+  machines round differently. It now uses a tolerance.
+
+**Changed**
+- Dependabot groups minor and patch updates into one weekly PR per ecosystem.
+
 ## 0.3.0 (2026-10-04)
 
 Input and design refinements across the web app (same front end in the desktop app); see

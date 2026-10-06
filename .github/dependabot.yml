@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # one PR per week for compatible updates; major versions still get their own PR
+    groups:
+      pip-minor-and-patch:
+        update-types: ["minor", "patch"]
 
   # Desktop shell: Tauri CLI (desktop/package.json + package-lock.json)
   - package-ecosystem: npm
@@ -13,6 +17,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # one PR per week for compatible updates; major versions still get their own PR
+    groups:
+      npm-minor-and-patch:
+        update-types: ["minor", "patch"]
 
   # Desktop shell: Rust crates (desktop/src-tauri/Cargo.toml + Cargo.lock)
   - package-ecosystem: cargo
@@ -20,6 +28,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # one PR per week for compatible updates; major versions still get their own PR
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
 
   # Workflow actions (pinned by commit SHA; Dependabot updates the SHA and the version comment)
   - package-ecosystem: github-actions

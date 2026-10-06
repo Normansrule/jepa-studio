@@ -102,7 +102,8 @@ jobs:
         with:
           projectPath: desktop
           tauriScript: npm run tauri --
-          args: --ci
+          # No `args: --ci`: tauri-action puts args after `--`, so cargo got `--ci` and failed
+          # ("unexpected argument"). The CLI already runs non-interactively when CI=true.
           # No tagName/releaseId: this step only builds. Publishing happens in the release job,
           # the only job with write access.
 

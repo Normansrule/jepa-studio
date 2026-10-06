@@ -1,6 +1,6 @@
 [package]
 name = "jepa-studio"
-version = "0.3.0"
+version = "0.3.1"
 description = "Desktop shell for jepa-studio: runs the local PyTorch backend and shows the site/ front end"
 authors = ["Aleksander Norman"]
 license = "MIT"
