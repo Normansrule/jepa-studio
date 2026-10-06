@@ -1510,7 +1510,7 @@ dependencies = [
 name = "jepa-studio"
 version = "0.3.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "dunce",
  "getrandom 0.3.4",
  "serde",
