@@ -38,8 +38,8 @@ def test_saliency_shape_range_determinism(arch):
     assert torch.allclose(s, saliency(m, x), atol=1e-6)
     b = saliency(m, torch.stack([x, _img(2)]))
     assert b.shape == (2, 16, 16)
-    # eval mode: samples in a batch are independent (batched kernels may round differently)
-    assert torch.allclose(b[0], s, atol=1e-4)
+    # a sample's map does not depend on the rest of the batch (one backward pass per image)
+    assert torch.allclose(b[0], s, atol=1e-6)
     assert m.training and all(p.grad is None for p in m.parameters())  # mode restored, no grads left
 
 

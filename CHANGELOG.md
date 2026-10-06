@@ -7,8 +7,11 @@
   tauri-action, which forwards extra arguments to cargo (`unexpected argument '--ci'`).
 - `tests/test_setup_script.py` failed for non-root users (CI runners, your terminal): the fake
   `sudo` did not understand `sudo -n`.
-- The ViT saliency test required bit-identical results; batched CPU attention kernels on some
-  machines round differently. It now uses a tolerance.
+- ViT saliency maps changed slightly (up to ~0.5%) depending on which other images were in the
+  same batch, because batched CPU attention kernels round differently on some machines (seen
+  on CI and a 6-core desktop). Saliency now runs one backward pass per image.
+- CI annotates failed tests from a JUnit report (`scripts/annotate_junit.py`), so failures are
+  readable on the run page without downloading logs.
 
 **Changed**
 - Dependabot groups minor and patch updates into one weekly PR per ecosystem.

@@ -69,13 +69,20 @@ def saliency(model, x: Tensor) -> Tensor:
     was = model.training
     model.eval()
     try:
+        grads = []
+        dev = next(model.parameters()).device
         with torch.enable_grad():
-            xg = xb.detach().to(next(model.parameters()).device, torch.float32).clone().requires_grad_(True)
-            e = bb(xg)
-            # sum of per-sample norms: in eval mode samples are independent, so each sample's
-            # gradient is its own. clamp avoids the 0/0 of d||e||/de at e = 0 (as the web engine does)
-            norm = e.pow(2).sum(dim=1).clamp_min(1e-24).sqrt().sum()
-            (g,) = torch.autograd.grad(norm, xg)  # parameter .grad buffers are left alone
+            # One image per backward pass: a sample's map must not depend on what else is in the
+            # batch. (Mathematically it doesn't in eval mode, but batched CPU attention kernels
+            # round differently, by ~0.5% on some CI machines.)
+            for i in range(xb.shape[0]):
+                xg = xb[i:i + 1].detach().to(dev, torch.float32).clone().requires_grad_(True)
+                e = bb(xg)
+                # clamp avoids the 0/0 of d||e||/de at e = 0 (as the web engine does)
+                norm = e.pow(2).sum(dim=1).clamp_min(1e-24).sqrt().sum()
+                (gi,) = torch.autograd.grad(norm, xg)  # parameter .grad buffers are left alone
+                grads.append(gi)
+            g = torch.cat(grads)
     finally:
         model.train(was)
     m = _unit_max(g.detach().abs().amax(dim=1).float().cpu())
