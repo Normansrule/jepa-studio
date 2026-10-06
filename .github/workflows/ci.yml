@@ -69,4 +69,7 @@ jobs:
           fi
           # The other Node scripts take arguments and run through their pytest wrappers
           # (tests/test_web_engine.py, tests/test_world_parity.py), which skip only without node.
-          python -m pytest "${args[@]}"
+          python -m pytest "${args[@]}" --junitxml=pytest-report.xml
+      - name: Annotate failed tests
+        if: failure()
+        run: python scripts/annotate_junit.py pytest-report.xml

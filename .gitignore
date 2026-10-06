@@ -31,3 +31,4 @@ signing-key.txt
 Thumbs.db
 .idea/
 .vscode/
+pytest-report.xml
