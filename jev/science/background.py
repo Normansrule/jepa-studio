@@ -107,7 +107,7 @@ def stars(d, pix_angle: float, seed: int = 0, density: float = 1.0, jac=None):
         # conserves surface brightness), mean = p <flux> 2 pi s^2 pix^2 / cell area, <h^6> = 1/7
         cell_area = (2.0 / n) ** 2
         mean = p * bright * (30 / 7 + 0.15) * 2 * np.pi * s * s * pix_angle ** 2 / cell_area
-        blend = np.clip((np.sqrt(det) / (s * s) / cell_area - 0.3) / 0.7, 0, 1)     # sqrt(det) ~ |det J| s^2
+        blend = np.clip((np.sqrt(det) / (s * s) / cell_area - 0.05) / 0.45, 0, 1)     # sqrt(det) ~ |det J| s^2
         w = w * (1 - blend) + mean * blend
         temp = 2500 + 22500 * _hash(face, cu, cv, li + 41, seed=seed) ** 2.5
         out += w[..., None] * color.blackbody_rgb(temp, luminance=False).clip(0)
@@ -118,7 +118,7 @@ def stars(d, pix_angle: float, seed: int = 0, density: float = 1.0, jac=None):
     band = np.exp(-(z / 0.18) ** 2)
     lon = np.arctan2(d[..., 1], d[..., 0])
     mod = 0.6 + 0.25 * np.sin(3 * lon + 1.3) + 0.15 * np.sin(7 * lon + 2 * z * 10)
-    out += (band * mod * 0.02)[..., None] * np.array([1.0, 0.86, 0.72])
+    out += (band * mod * 0.005)[..., None] * np.array([1.0, 0.86, 0.72])
     return out
 
 

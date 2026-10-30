@@ -271,7 +271,7 @@ def auto_exposure(hdr):
     bright = lum[lum > 1e-6]
     if bright.size == 0:
         return 1.0
-    return float(2.2 / max(np.percentile(bright, 99.5), 1e-9))
+    return float(1.7 / max(np.percentile(bright, 99.5), 1e-9))
 
 
 # ----------------------------------------------------------------------------------------------
@@ -283,24 +283,49 @@ def _noop(*_a, **_k):
     return None
 
 
+_BENCH: dict = {}
+
+
+def _bench_per_element(device: str) -> float:
+    """Seconds per ray for one Dormand-Prince step's 7 right-hand-side evaluations, measured once per
+    device on 65 536 rays (so it reflects this machine)."""
+    if device not in _BENCH:
+        n = 1 << 16
+        dev = torch.device(device)
+        Y = torch.rand(6, n, dtype=torch.float64, device=dev) + torch.tensor(
+            [[30.0], [1.0], [0.0], [0.0], [1.0], [0.1]], dtype=torch.float64, device=dev)
+        b = torch.rand(n, dtype=torch.float64, device=dev)
+        best = float("inf")
+        for _ in range(3):
+            t0 = time.perf_counter()
+            for _ in range(7):
+                kerr._rhs(Y, b, b, 0.6)
+            if device == "cuda":
+                torch.cuda.synchronize()
+            best = min(best, time.perf_counter() - t0)
+        _BENCH[device] = best / n
+    return _BENCH[device]
+
+
 def estimate_seconds(params: dict) -> dict:
-    """Quick timing probe: trace a 24 x 14 grid with the requested camera and tolerance and scale
-    by the number of rays and traces. Returns {seconds, rays, traces, per_ray_s}."""
+    """Runtime estimate: a 32 x 18 probe trace with the requested camera and tolerance gives the mean
+    number of steps per ray; a micro-benchmark gives this machine's cost per ray-step (a full step is
+    about 2x its 7 right-hand-side evaluations: error control, events, bookkeeping). Shading costs
+    about 1.8 us per sample per frame. Measured on a 2-core CPU it is 0-35 % above the actual time
+    (docs/jev/science.md), erring long on purpose since it gates approval. Returns {seconds, rays, traces, mean_steps, per_ray_step_s}."""
     p = normalize(params)
-    probe = {**p, "width": 24, "height": 14}
-    probe["_spp"] = 1
-    t0 = time.perf_counter()
-    trace_view(probe, p["distance_M"], p["inclination_deg"])
-    per_ray = (time.perf_counter() - t0) / (24 * 14)
-    if p["device"] == "cuda":
-        per_ray *= 0.1
+    probe = {**p, "width": 32, "height": 18, "_spp": 1}
+    _, res, _ = trace_view(probe, p["distance_M"], p["inclination_deg"])
+    steps = max(1.0, res.stats["mean_steps"])
+    per_step = 2.0 * _bench_per_element(p["device"])
     rays = p["width"] * p["height"] * p["_spp"]
     traces = 1 if (p["frames"] == 1 or p["animation"] == "orbit") else p["frames"]
-    # shading + encoding cost per frame (measured: ~1.5 us per pixel per sample on this class of CPU)
-    shade_s = p["frames"] * p["width"] * p["height"] * p["_spp"] * 1.5e-6
-    # the probe includes fixed overhead, so this is a deliberate over-estimate for small jobs
-    sec = per_ray * rays * traces * 0.5 + shade_s
-    return {"seconds": float(sec), "rays": rays, "traces": traces, "per_ray_s": per_ray}
+    if traces > 1 and p["animation"] == "zoom":
+        steps *= 0.8                     # closer cameras need fewer steps per ray
+    trace_s = rays * steps * per_step * traces
+    shade_s = p["frames"] * rays * 1.8e-6
+    return {"seconds": float(trace_s + shade_s + 1.0), "rays": rays, "traces": traces, "mean_steps": steps,
+            "per_ray_step_s": per_step}
 
 
 def render(params: dict, out_dir: Path, progress: Callable[[float, str], None] | None = None,

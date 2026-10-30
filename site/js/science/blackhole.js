@@ -108,7 +108,10 @@ float diskPattern(float r, float psi) {
   return clamp(0.5 + 0.5 * ring * (1.0 + 0.3 * az), 0.05, 2.0);
 }
 
-vec3 starLayer(vec3 d, float cells, float bright, float prob, float seed, float sigma, float mag,
+// Stars are point sources: the offset of the star from this pixel's ray is expressed in pixel units by
+// solving delta = alpha * dFdx(dir) + beta * dFdy(dir) (2x2 normal equations), so every star image is
+// about one pixel wide however the lens stretches the sky; its brightness follows the magnification.
+vec3 starLayer(vec3 d, vec3 ex, vec3 ey, float cells, float bright, float prob, float seed, float mag,
                float footprint, float pixAngle) {
   vec3 a = abs(d);
   float m = max(a.x, max(a.y, a.z));
@@ -119,25 +122,30 @@ vec3 starLayer(vec3 d, float cells, float bright, float prob, float seed, float 
   vec2 cell = floor((uv * 0.5 + 0.5) * cells);
   vec3 key = vec3(cell, dot(face, vec3(1.0, 2.0, 3.0)) + seed * 7.0);
   float h1 = hash13(key + 0.11), h2 = hash13(key + 5.3), h3 = hash13(key + 9.7), h4 = hash13(key + 13.1);
-  if (h3 > prob) h4 = -1.0;                                    // empty cell (still adds the mean below)
   vec2 suv = ((cell + 0.2 + 0.6 * vec2(h1, h2)) / cells) * 2.0 - 1.0;
   vec3 sd;
   if (m == a.x) sd = vec3(face.x, suv.x, suv.y);
   else if (m == a.y) sd = vec3(suv.y, face.y, suv.x);
   else sd = vec3(suv.x, suv.y, face.z);
   sd = normalize(sd);
-  float ang2 = dot(d - sd, d - sd);
-  float flux = h4 < 0.0 ? 0.0 : bright * (pow(h4, 6.0) * 30.0 + 0.15);
+  vec3 dl = sd - d;
+  float fl = 0.05 * pixAngle * pixAngle;                     // floor: magnification cap near caustics
+  float g11 = dot(ex, ex) + fl, g22 = dot(ey, ey) + fl, g12 = dot(ex, ey);
+  float det = max(g11 * g22 - g12 * g12, 1e-30);
+  float r1 = dot(dl, ex), r2 = dot(dl, ey);
+  float al = (g22 * r1 - g12 * r2) / det, be = (g11 * r2 - g12 * r1) / det;
+  float px2 = al * al + be * be;                              // squared distance in pixels
+  float flux = h3 > prob ? 0.0 : bright * (pow(h4, 6.0) * 30.0 + 0.15);
   float T = 2500.0 + 22500.0 * pow(hash13(key + 21.7), 2.5);
-  float w = flux * exp(-0.5 * ang2 / (sigma * sigma)) * mag;
+  float w = flux * exp(-0.5 * px2 / 0.36) * mag;
   // footprint >> cell (strong demagnification by the shadow): the layer's mean surface brightness
   float cellArea = 4.0 / (cells * cells);
   float mean = prob * bright * (30.0 / 7.0 + 0.15) * 6.2832 * 0.36 * pixAngle * pixAngle / cellArea;
-  w = mix(w, mean, clamp((footprint / cellArea - 0.3) / 0.7, 0.0, 1.0));
+  w = mix(w, mean, clamp((footprint / cellArea - 0.05) / 0.45, 0.0, 1.0));
   return w * bb(T).rgb;
 }
 
-vec3 sky(vec3 d, float footprint, float pixAngle) {
+vec3 sky(vec3 d, vec3 ex, vec3 ey, float footprint, float pixAngle) {
   if (uBackground == 2) return vec3(0.0);
   if (uBackground == 1) {
     float th = acos(clamp(d.y, -1.0, 1.0));
@@ -150,17 +158,15 @@ vec3 sky(vec3 d, float footprint, float pixAngle) {
     if (min(f.x, f.y * max(sin(th), 0.05)) < 0.03) c = vec3(0.55, 0.6, 0.7);
     return c * 0.6;
   }
-  // point stars: footprint = sky solid angle of this pixel; magnification = pixel / footprint
-  float sigma = max(sqrt(footprint), 0.3 * pixAngle) * 0.6;
   float mag = clamp(pixAngle * pixAngle / max(footprint, 1e-12), 0.05, 20.0);
-  vec3 c = starLayer(d, 120.0, 0.5, 0.35, 0.0, sigma, mag, footprint, pixAngle)
-         + starLayer(d, 40.0, 2.0, 0.5, 1.0, sigma, mag, footprint, pixAngle)
-         + starLayer(d, 13.0, 8.0, 0.6, 2.0, sigma, mag, footprint, pixAngle);
+  vec3 c = starLayer(d, ex, ey, 120.0, 0.5, 0.35, 0.0, mag, footprint, pixAngle)
+         + starLayer(d, ex, ey, 40.0, 2.0, 0.5, 1.0, mag, footprint, pixAngle)
+         + starLayer(d, ex, ey, 13.0, 8.0, 0.6, 2.0, mag, footprint, pixAngle);
   vec3 n = normalize(vec3(0.35, 0.9, -0.25));
   float z = dot(d, n);
   float lon = atan(d.z, d.x);
   c += exp(-(z / 0.18) * (z / 0.18)) * (0.6 + 0.25 * sin(3.0 * lon + 1.3) + 0.15 * sin(7.0 * lon + 20.0 * z))
-       * 0.02 * vec3(1.0, 0.86, 0.72);
+       * 0.005 * vec3(1.0, 0.86, 0.72);
   return c;
 }
 
@@ -234,7 +240,7 @@ void main() {
   vec3 ddx = dFdx(skyDir), ddy = dFdy(skyDir);
   float footprint = length(cross(ddx, ddy));
   float pixAngle = 2.0 * uTanHalf / uRes.x;
-  if (escaped) col += sky(skyDir, footprint, pixAngle);
+  if (escaped) col += sky(skyDir, ddx, ddy, footprint, pixAngle);
   outColor = vec4(srgb(aces(col * uExposure)), 1.0);
 }`;
 
