@@ -175,9 +175,15 @@ def test_parse_tool_calls_robust():
     assert parse_tool_calls('{"tool": "calculator", "arguments": {"expression": "1"}}', names)[0]["name"] == "calculator"
     assert parse_tool_calls('[{"name": "calculator", "arguments": "{\\"expression\\": \\"2\\"}"}]',
                             names)[0]["arguments"] == {"expression": "2"}
-    assert parse_tool_calls('Sure!\n```json\n{"function": {"name": "write_file", "arguments": {"path": "a", '
+    assert parse_tool_calls('```json\n{"function": {"name": "write_file", "arguments": {"path": "a", '
                             '"content": "b"}}}\n```', names)[0]["name"] == "write_file"
-    assert parse_tool_calls('I will call {"tool": "calculator", "arguments": {"expression": "3"}} now', names)
+    assert len(parse_tool_calls('<tool_call>{"name": "calculator", "arguments": {"expression": "1"}}</tool_call>\n'
+                                '<tool_call>{"name": "calculator", "arguments": {"expression": "2"}}</tool_call>',
+                                names)) == 2
+    # a call is only a call when it is the whole reply (review M2): quoted JSON never runs
+    assert not parse_tool_calls('Sure!\n```json\n{"function": {"name": "write_file", "arguments": {"path": "a", '
+                                '"content": "b"}}}\n```', names)
+    assert not parse_tool_calls('I will call {"tool": "calculator", "arguments": {"expression": "3"}} now', names)
     assert not parse_tool_calls('I will call {"tool": "calculator", "arguments": {}} now', names, strict=True)
     assert not parse_tool_calls('{"tool": "rm_rf", "arguments": {}}', names)       # unknown tools are ignored
     assert not parse_tool_calls('Here is JSON: {"a": 1}', names)

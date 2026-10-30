@@ -24,10 +24,52 @@ import os
 import secrets
 import shutil
 import sqlite3
+import stat
 import threading
 import time
 import zipfile
 from pathlib import Path
+
+
+def _private_dir(p: Path) -> Path:
+    from .settings import private_dir
+    return private_dir(p)
+
+
+def _is_regular(p: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(p).st_mode)
+    except OSError:
+        return False
+
+
+def _zip_regular(z: zipfile.ZipFile, p: Path, arcname: str) -> None:
+    """Add one workspace file without following links or blocking on FIFOs."""
+    from .tools.base import NotRegularFile, open_regular
+    try:
+        with open_regular(p, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            zi = zipfile.ZipInfo.from_file(p, arcname)
+            zi.file_size = st.st_size
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            with z.open(zi, "w") as out:
+                shutil.copyfileobj(fh, out, 1 << 20)
+    except (NotRegularFile, OSError):
+        pass
+
+
+def _finish_export(out: Path, keep: int | None = None) -> Path:
+    """0600 on the new zip; only the newest `keep` export zips stay in the folder."""
+    try:
+        os.chmod(out, 0o600)
+    except OSError:
+        pass
+    keep = KEEP_EXPORTS if keep is None else keep
+    zips = sorted((z for z in out.parent.glob("*.zip") if _is_regular(z)), key=lambda z: z.stat().st_mtime)
+    for old in zips[:-keep] if len(zips) > keep else []:
+        if old != out:
+            old.unlink(missing_ok=True)
+    return out
 
 MIGRATIONS: list[str] = [
     # v1
@@ -56,7 +98,13 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE approvals ADD COLUMN remember TEXT;
     """,
+    # v3: SHA-256 of the exact arguments each approval card showed (the decision must echo it)
+    """
+    ALTER TABLE approvals ADD COLUMN args_sha256 TEXT;
+    """,
 ]
+ARGS_CAP = 2_000_000           # characters of JSON kept per audit row (approval cards refuse more than 1 000 000)
+KEEP_EXPORTS = 3               # export zips kept in jev-data/exports (older ones are deleted)
 SCHEMA_VERSION = len(MIGRATIONS)
 
 
@@ -81,7 +129,7 @@ class Store:
     def __init__(self, path: str | Path, workspace_root: str | Path):
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        _private_dir(self.path.parent)
         if not self.path.exists():
             os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))
         self.lock = threading.RLock()
@@ -131,7 +179,7 @@ class Store:
         cid = "c-" + secrets.token_hex(6)
         t = _now()
         self._x("INSERT INTO conversations VALUES (?,?,?,?,?,?)", (cid, title[:120], model, cid, t, t))
-        (self.workspace_root / cid).mkdir(parents=True, exist_ok=True)
+        _private_dir(self.workspace_root / cid)
         return self.get_conversation(cid)
 
     def get_conversation(self, cid: str) -> dict | None:
@@ -144,8 +192,7 @@ class Store:
         p = (self.workspace_root / c["workspace"]).resolve()
         if self.workspace_root not in p.parents:
             raise PermissionError("workspace outside workspace_root")
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return _private_dir(p)
 
     def touch(self, cid: str, model: str | None = None) -> None:
         if model:
@@ -194,12 +241,15 @@ class Store:
 
     # ------------------------------------------------------------------ approvals (audit log)
     def add_approval(self, a: dict) -> None:
+        from .policy import args_hash
         self._x("INSERT INTO approvals (id, kind, tool, args, reason, risk, rules, conversation_id, turn_id, call_id, "
-                "status, decided_by, created, decided, job_id, remember) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (a["id"], a.get("kind", "tool"), a.get("tool"), json.dumps(a.get("args"), default=str)[:200000],
+                "status, decided_by, created, decided, job_id, remember, args_sha256) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (a["id"], a.get("kind", "tool"), a.get("tool"), json.dumps(a.get("args"), default=str)[:ARGS_CAP],
                  a.get("reason"), a.get("risk"), json.dumps(a.get("rules") or []), a.get("conversation_id"),
                  a.get("turn_id"), a.get("call_id"), a.get("status"), a.get("decided_by"),
-                 a.get("created") or _now(), a.get("decided"), a.get("job_id"), a.get("remember")))
+                 a.get("created") or _now(), a.get("decided"), a.get("job_id"), a.get("remember"),
+                 a.get("args_sha256") or args_hash(a.get("args"))))
 
     def update_approval(self, aid: str, **fields) -> None:
         allowed = {"status", "decided_by", "decided", "job_id", "reason", "remember"}
@@ -228,6 +278,8 @@ class Store:
         p = Path(path).resolve()
         if ws not in p.parents or (self.workspace_root not in ws.parents and ws != self.workspace_root):
             raise PermissionError(f"artifact {p} is outside its workspace")
+        if not _is_regular(p):
+            raise PermissionError(f"artifact {p.name} is not a regular file")
         aid = "f-" + secrets.token_hex(8)
         rel_ws = ws.relative_to(self.workspace_root).as_posix()
         self._x("INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -257,8 +309,10 @@ class Store:
         p = (ws / a["path"]).resolve()     # resolve(): a symlink planted later cannot point outside
         if ws not in p.parents:
             raise PermissionError("artifact path escapes its workspace")
-        if not p.is_file():
+        if not p.exists():
             raise FileNotFoundError(a["path"])
+        if not _is_regular(p):
+            raise PermissionError("artifact is not a regular file")
         return a, p
 
     # ------------------------------------------------------------------ models
@@ -283,19 +337,19 @@ class Store:
         """Write <out_dir>/<cid>-<time>.zip with conversation.json and every workspace file."""
         data = self.conversation_json(cid)
         ws = self.workspace(cid)
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"{cid}-{time.strftime('%Y%m%d-%H%M%S')}.zip"
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        out_dir = _private_dir(Path(out_dir))
+        out = out_dir / f"{cid}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.zip"
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("conversation.json", json.dumps(data, indent=2, default=str))
             for dirpath, dirnames, filenames in os.walk(ws):
-                dirnames[:] = [d for d in dirnames if d not in (".venv", ".tmp", "node_modules", "__pycache__")]
+                dirnames[:] = [d for d in dirnames if d not in (".venv", ".tmp", "node_modules", "__pycache__")
+                               and not (Path(dirpath) / d).is_symlink()]
                 for fn in filenames:
                     p = Path(dirpath) / fn
-                    if p.is_symlink() or not p.is_file():
-                        continue
-                    z.write(p, "files/" + p.relative_to(ws).as_posix())
-        return out
+                    if _is_regular(p):
+                        _zip_regular(z, p, "files/" + p.relative_to(ws).as_posix())
+        return _finish_export(out)
 
     def delete_conversation(self, cid: str) -> None:
         c = self.get_conversation(cid)
@@ -338,10 +392,10 @@ class Store:
                 "conversations": convs,
                 "approvals": [_row(r) for r in self._x("SELECT * FROM approvals ORDER BY created").fetchall()],
                 "models": self.list_models(), "settings": settings or {}}
-        out_dir = Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"jev-data-{time.strftime('%Y%m%d-%H%M%S')}.zip"
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        out_dir = _private_dir(Path(out_dir))
+        out = out_dir / f"jev-data-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.zip"
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("jev-data.json", json.dumps(data, indent=2, default=str))
             for name, ws in self._workspace_dirs():
                 for dirpath, dirnames, filenames in os.walk(ws):
@@ -349,10 +403,9 @@ class Store:
                                    and not (Path(dirpath) / d).is_symlink()]
                     for fn in filenames:
                         p = Path(dirpath) / fn
-                        if p.is_symlink() or not p.is_file():
-                            continue
-                        z.write(p, f"workspaces/{name}/" + p.relative_to(ws).as_posix())
-        return out
+                        if _is_regular(p):
+                            _zip_regular(z, p, f"workspaces/{name}/" + p.relative_to(ws).as_posix())
+        return _finish_export(out)
 
     def delete_all(self, keep_audit_log: bool = False, before: float | None = None) -> dict:
         """Delete every conversation (rows and workspace folders), the science outputs, the imported-model

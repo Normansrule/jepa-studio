@@ -13,7 +13,7 @@ import math
 import os
 from pathlib import Path
 
-from .base import ToolContext, ToolError, ToolResult, tool
+from .base import ToolContext, ToolError, ToolResult, open_regular, tool
 
 SKIP = {".jev", ".venv", ".tmp", "__pycache__", "node_modules", ".git"}
 EXT_KIND = {
@@ -82,10 +82,10 @@ def list_files(ctx: ToolContext, path: str = ".", max_entries: int = 200) -> Too
       risk="read", category="files")
 def read_file(ctx: ToolContext, path: str, max_chars: int = 20000, offset: int = 0) -> ToolResult:
     p = ctx.path(path)
-    if not p.is_file():
+    if not p.exists():
         raise ToolError(f"{path!r} is not a file in the workspace (use list_files)")
-    size = p.stat().st_size
-    with open(p, "rb") as f:
+    with open_regular(p, "rb") as f:            # refuses FIFOs/devices without blocking
+        size = os.fstat(f.fileno()).st_size
         f.seek(offset)
         raw = f.read(max_chars * 4)
     if b"\x00" in raw[:8192]:
@@ -180,7 +180,7 @@ def write_file(ctx: ToolContext, path: str, content: str, append: bool = False) 
     if rel.parts and rel.parts[0] in (".jev", ".venv"):
         raise ToolError("that folder is reserved for JEV's own bookkeeping")
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a" if append else "w", encoding="utf-8", newline="") as f:
+    with open_regular(p, "a" if append else "w", encoding="utf-8", newline="") as f:
         f.write(content)
     kind = artifact_kind(p)
     return ToolResult(True, f"{'Appended to' if append else 'Wrote'} {rel.as_posix()} ({_human(p.stat().st_size)}).",
@@ -259,20 +259,20 @@ def make_plot(ctx: ToolContext, kind: str, series: list, title: str = "", x_labe
       risk="read", category="files")
 def summarize_file(ctx: ToolContext, path: str) -> ToolResult:
     p = ctx.path(path)
-    if not p.is_file():
+    if not p.exists():
         raise ToolError(f"{path!r} is not a file in the workspace")
-    size = p.stat().st_size
-    kind = artifact_kind(p)
-    lines = [f"{path}: {_human(size)}, kind {kind}"]
-    if kind == "image" and p.suffix.lower() != ".svg":
-        try:
-            from PIL import Image
-            with Image.open(p) as im:
-                lines.append(f"image {im.size[0]}x{im.size[1]}, mode {im.mode}, format {im.format}")
-        except Exception as e:  # noqa: BLE001
-            lines.append(f"could not open image: {e}")
-        return ToolResult(True, "\n".join(lines))
-    with open(p, "rb") as f:
+    with open_regular(p, "rb") as f:            # refuses FIFOs/devices without blocking
+        size = os.fstat(f.fileno()).st_size
+        kind = artifact_kind(p)
+        lines = [f"{path}: {_human(size)}, kind {kind}"]
+        if kind == "image" and p.suffix.lower() != ".svg":
+            try:
+                from PIL import Image
+                with Image.open(f) as im:
+                    lines.append(f"image {im.size[0]}x{im.size[1]}, mode {im.mode}, format {im.format}")
+            except Exception as e:  # noqa: BLE001
+                lines.append(f"could not open image: {e}")
+            return ToolResult(True, "\n".join(lines))
         head = f.read(2_000_000)
     if b"\x00" in head[:8192]:
         return ToolResult(True, "\n".join(lines + ["binary file"]))

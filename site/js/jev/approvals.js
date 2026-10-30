@@ -1,8 +1,11 @@
 // The approval safety net, front-end half. Anything JEV wants to do outside its sandbox arrives
 // as a pending approval (from a turn's approval_request event, or from the pending list for
 // actions such as a model download). One focused, modal <dialog> asks about one approval at a
-// time: what will happen, why it needs permission, the exact command / path / model, and three
-// answers: Approve once, Approve for this session, Deny. Esc (the dialog's cancel) means Deny.
+// time: what will happen, why it needs permission, the exact command / path / model, every argument
+// in full (scrollable) with the SHA-256 of those exact arguments, and three answers: Approve once,
+// Approve for this session (only these exact arguments, in this conversation), Deny. Esc (the
+// dialog's cancel) means Deny. Approving sends the SHA-256 back; the backend refuses an approval
+// whose hash does not match the pending call.
 // A "N waiting" badge stays in the tab bar and the JEV status strip until every request is
 // answered, and the Approvals panel lists pending requests plus the audit history.
 import { el, clear, $, download } from '../ui/dom.js';
@@ -100,7 +103,7 @@ export class Approvals {
     const id = raw.approval_id || raw.id;
     if (!id || this.pending.has(id)) return;
     const a = {
-      id, tool: raw.name || raw.tool || 'tool', args: raw.args || {}, reason: raw.reason || '', risk: raw.risk || 'approve',
+      id, tool: raw.name || raw.tool || 'tool', args: raw.args || {}, argsSha256: raw.args_sha256 || null, reason: raw.reason || '', risk: raw.risk || 'approve',
       conversation_id: raw.conversation_id || null, turn_id: raw.turn_id || null, call_id: raw.call_id || null,
       created: raw.created || Date.now() / 1000,
     };
@@ -153,6 +156,8 @@ export class Approvals {
     $('#appr-tool').textContent = a.tool;
     clear($('#appr-risk')).append(riskBadge(a.risk || 'approve', { explain: true }));
     $('#appr-args').textContent = JSON.stringify(a.args, null, 2);
+    const hash = $('#appr-hash');
+    if (hash) hash.textContent = a.argsSha256 || 'not provided';
     $('#appr-error').hidden = true;
     for (const b of this.dlg.querySelectorAll('.appr-actions .btn')) b.disabled = false;
     this.renderCount();
@@ -164,7 +169,7 @@ export class Approvals {
     this.busy = true;
     for (const b of this.dlg.querySelectorAll('.appr-actions .btn')) b.disabled = true;
     try {
-      const r = await this.client.decide(a.id, decision, remember);
+      const r = await this.client.decide(a.id, decision, remember, a.argsSha256);
       this.pending.delete(a.id);
       this.emit();
       this.renderPanel();

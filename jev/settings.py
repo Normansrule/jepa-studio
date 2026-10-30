@@ -15,9 +15,13 @@ where `jev/` is this Python package. Keeping user data in its own folder means y
 conversations never end up inside the code tree (and are easy to back up or delete).
 
 The HTTP API can change only `default_model`, `limits`, `network_allowed` and `ollama_url`
-(POST /api/jev/settings). Approval rules (`approval_rules`), `allow_remote_ollama` and
-`allow_cloud_models` can be changed only by editing this file, so no web page and no model
-output can loosen them.
+(POST /api/jev/settings; every change is written to the audit log with the values before and
+after). Approval rules (`approval_rules`), `allow_remote_ollama` and `allow_cloud_models` can be
+changed only by editing this file, so no web page and no model output can loosen them. The file
+is validated on every load: unknown keys, unknown approval-table rows and invalid values are
+refused, and `approval_rules` can only tighten the locked rows (jev/policy.py), never loosen
+them. Sandboxed code cannot write this file wherever the OS gives JEV a mount namespace
+(bubblewrap, unshare); see docs/jev/SAFETY.md.
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ import copy
 import ipaddress
 import json
 import os
+import re
+import stat
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
@@ -45,6 +51,7 @@ DEFAULTS: dict = {
         "wall_seconds": 300,            # wall clock per code run; the whole process tree is killed after
         "max_output_mb": 200,           # largest single file a code run may write (RLIMIT_FSIZE)
         "max_file_mb": 500,             # files bigger than this need approval (writing, importing)
+        "max_workspace_mb": 2048,       # total size of one conversation's workspace (checked around every run)
     },
     "network_allowed": False,           # True: sandboxed code may use the network without asking
     "approval_rules": {},               # {"<rule>": "run"|"ask"|"deny"} or {"tool:<name>": ...}; see policy.py
@@ -72,6 +79,7 @@ SCHEMA: dict = {
                 "wall_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
                 "max_output_mb": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 "max_file_mb": {"type": "integer", "minimum": 1, "maximum": 1048576},
+                "max_workspace_mb": {"type": "integer", "minimum": 16, "maximum": 1048576},
             },
         },
         "network_allowed": {"type": "boolean"},
@@ -118,18 +126,40 @@ def check_ollama_url(url: str, allow_remote: bool) -> str:
     return url.rstrip("/")
 
 
+TOOL_RULE = re.compile(r"^tool:[A-Za-z0-9_]{1,64}$")
+
+
 def _check(cfg: dict) -> None:
+    from .policy import RULES
+
     errs = validate(cfg, SCHEMA)
     for k, v in (cfg.get("approval_rules") or {}).items():
         if v not in RULE_ACTIONS:
             errs.append(f"$.approval_rules.{k}: must be one of {RULE_ACTIONS}")
+        if not isinstance(k, str) or not (k in RULES or TOOL_RULE.match(k)):
+            errs.append(f"$.approval_rules.{k}: not a row of the approval table (see jev/policy.py) "
+                        "or a \"tool:<name>\" entry")
     if errs:
         raise SettingsError("invalid JEV settings: " + "; ".join(errs[:10]))
     check_ollama_url(cfg["ollama_url"], cfg["allow_remote_ollama"])
 
 
+def private_dir(path: str | Path) -> Path:
+    """mkdir -p with mode 0700 (and tighten an existing folder JEV owns to 0700): JEV's data,
+    workspaces and exports are readable by you only."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        try:
+            if not p.is_symlink() and stat.S_IMODE(p.stat().st_mode) & 0o077:
+                os.chmod(p, 0o700)
+        except OSError:
+            pass
+    return p
+
+
 def _write_private(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_dir(path.parent)
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:

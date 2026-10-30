@@ -31,6 +31,7 @@ class FakeOllama:
         self.models = {"qwen2.5-coder:7b": 4_700_000_000, "llama3.1:8b": 4_900_000_000}
         self.no_tools: set[str] = set()       # /api/show says no tools, chat with tools -> 400
         self.reject_tools: set[str] = set()   # /api/show says tools, but chat with tools -> 400 anyway
+        self.remote: set[str] = set()         # /api/show reports remote_host: an Ollama cloud model under any name
         self.blobs: dict[str, int] = {}
         self.lock = threading.Lock()
         self.port = free_port()
@@ -107,7 +108,10 @@ class FakeOllama:
                     if body.get("model") not in fake.models:
                         return self._json(404, {"error": f"model '{body.get('model')}' not found"})
                     caps = ["completion"] + ([] if body["model"] in fake.no_tools else ["tools"])
-                    return self._json(200, {"capabilities": caps, "template": "{{ .Prompt }}"})
+                    info = {"capabilities": caps, "template": "{{ .Prompt }}"}
+                    if body["model"] in fake.remote:
+                        info.update(remote_host="https://ollama.com:443", remote_model="gpt-oss:120b")
+                    return self._json(200, info)
                 if self.path == "/api/chat":
                     if body.get("model") not in fake.models:
                         return self._json(404, {"error": f"model \"{body.get('model')}\" not found, try pulling it"})

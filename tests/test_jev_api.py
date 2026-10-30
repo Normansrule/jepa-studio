@@ -58,6 +58,19 @@ def req(s, path, body=None, method=None, token=True, host=None, origin=None, raw
         return e.code, json.loads(e.read() or b"{}")
 
 
+def decide(s, aid, decision="approve", remember=None, sha=None):
+    """POST a decision the way the app does: approving echoes the SHA-256 the approval card showed."""
+    body = {"decision": decision}
+    if remember is not None:
+        body["remember"] = remember
+    if decision == "approve":
+        if sha is None:
+            pend = req(s, "/api/jev/approvals?status=pending")[1]["approvals"]
+            sha = next((a["args_sha256"] for a in pend if a["id"] == aid), None)
+        body["args_sha256"] = sha
+    return req(s, f"/api/jev/approvals/{aid}", body=body)
+
+
 def poll(s, path, until=("done", "error", "cancelled"), timeout=60, stop_on=None):
     t0, n, events = time.monotonic(), 0, []
     while time.monotonic() - t0 < timeout:
@@ -170,12 +183,18 @@ def test_approval_flow_over_http(srv):
     p = [a for a in pend["approvals"] if a["id"] == ar["approval_id"]][0]
     assert p["tool"] == "run_shell" and p["turn_id"] == r["turn_id"] and p["args"] == {"command": "echo hi-$((2+3))"}
     assert req(srv, f"/api/jev/approvals/{ar['approval_id']}", body={"decision": "maybe"})[0] == 400
-    code, out = req(srv, f"/api/jev/approvals/{ar['approval_id']}", body={"decision": "approve", "remember": None})
+    assert p["args_sha256"] == ar["args_sha256"] and len(ar["args_sha256"]) == 64
+    # approving needs the SHA-256 of the exact arguments the card showed
+    assert req(srv, f"/api/jev/approvals/{ar['approval_id']}", body={"decision": "approve"})[0] == 400
+    assert req(srv, f"/api/jev/approvals/{ar['approval_id']}",
+               body={"decision": "approve", "args_sha256": "f" * 64})[0] == 400
+    code, out = req(srv, f"/api/jev/approvals/{ar['approval_id']}", body={"decision": "approve", "remember": None,
+                                                                          "args_sha256": ar["args_sha256"]})
     assert code == 200 and out == {"ok": True, "status": "approved"}
     events, status = poll(srv, f"/api/jev/turns/{r['turn_id']}/events")
     res = [e for e in events if e["event"] == "tool_result"][0]
     assert status == "done" and res["ok"] and "hi-5" in res["content"]
-    assert req(srv, "/api/jev/approvals/a-unknown", body={"decision": "approve"})[0] == 404
+    assert req(srv, "/api/jev/approvals/a-unknown", body={"decision": "approve", "args_sha256": "0" * 64})[0] == 404
     code, allap = req(srv, "/api/jev/approvals")
     assert any(a["status"] == "auto_run" for a in allap["approvals"])        # automatic decisions are logged too
 
@@ -196,7 +215,7 @@ def test_model_pull_import_delete_need_approval(srv, tmp_path):
     code, out = req(srv, "/api/jev/models/pull", body={"name": "phi3:mini"})
     assert code == 200 and out["status"] == "pending" and "job_id" not in out
     assert "phi3:mini" not in srv.fake.models                  # nothing downloaded before you approve
-    code, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    code, dec = decide(srv, out["approval_id"])
     assert dec["status"] == "approved" and dec["job_id"].startswith("j-")
     events, status = poll(srv, f"/api/jev/jobs/{dec['job_id']}/events")
     assert status == "done", events
@@ -211,7 +230,7 @@ def test_model_pull_import_delete_need_approval(srv, tmp_path):
     g.write_bytes(b"GGUF" + os.urandom(1000))
     code, out = req(srv, "/api/jev/models/import", body={"gguf_path": str(g), "name": "mine"})
     assert code == 200 and out["status"] == "pending"
-    _, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    _, dec = decide(srv, out["approval_id"])
     events, status = poll(srv, f"/api/jev/jobs/{dec['job_id']}/events")
     import hashlib
     assert status == "done" and events[-1]["sha256"] == hashlib.sha256(g.read_bytes()).hexdigest()
@@ -220,10 +239,10 @@ def test_model_pull_import_delete_need_approval(srv, tmp_path):
     # delete (name with ':' url-encoded) and deny path
     code, out = req(srv, "/api/jev/models/llama3.1%3A8b", method="DELETE")
     assert code == 200 and out["status"] == "pending"
-    _, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "deny"})
+    _, dec = decide(srv, out["approval_id"], "deny")
     assert dec == {"ok": True, "status": "denied"} and "llama3.1:8b" in srv.fake.models
     _, out = req(srv, "/api/jev/models/llama3.1:8b", method="DELETE")
-    _, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    _, dec = decide(srv, out["approval_id"])
     poll(srv, f"/api/jev/jobs/{dec['job_id']}/events")
     assert "llama3.1:8b" not in srv.fake.models
 
@@ -254,7 +273,7 @@ def test_conversation_files_and_delete(srv):
     ws = get_api(srv.root).rt.store.workspace(cid)
     code, out = req(srv, f"/api/jev/conversations/{cid}", method="DELETE")
     assert code == 200 and out["status"] == "pending" and ws.exists()
-    req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    decide(srv, out["approval_id"])
     assert req(srv, f"/api/jev/conversations/{cid}")[0] == 404 and not ws.exists()
 
 
@@ -294,7 +313,7 @@ def test_science_routes(srv, monkeypatch):
     fake_pkg.blackhole.estimate_seconds = lambda params: {"seconds": 3600.0}
     code, out = req(srv, "/api/jev/science/blackhole", body={"spin": 0.5, "width": 3840, "height": 2160, "frames": 600})
     assert code == 200 and out["status"] == "pending" and "60 minutes" in out["reason"] and "job_id" not in out
-    _, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    _, dec = decide(srv, out["approval_id"])
     events, status = poll(srv, f"/api/jev/jobs/{dec['job_id']}/events")
     assert status == "done"
     fake_pkg.blackhole.estimate_seconds = lambda params: {"seconds": 5.0}
@@ -349,11 +368,11 @@ def test_paths_audit_limit_export_and_delete_all(srv):
     row = [a for a in pend["approvals"] if a["id"] == out["approval_id"]][0]
     assert row["tool"] == "data_delete" and row["kind"] == "data_delete" and "delete" in row["rules"]
     assert row["args"]["keep_audit_log"] is False and row["args"]["conversations"] >= 1
-    req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "deny"})
+    decide(srv, out["approval_id"], "deny")
     assert req(srv, f"/api/jev/conversations/{cid}")[0] == 200 and ws.exists()
     # approve: conversations, workspaces, exports and the old audit rows are gone; the approval stays
     _, out = req(srv, "/api/jev/data/delete", body={"keep_audit_log": False})
-    code, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    code, dec = decide(srv, out["approval_id"])
     assert code == 200 and dec == {"ok": True, "status": "approved"}
     assert req(srv, "/api/jev/conversations")[1]["conversations"] == []
     assert not ws.exists() and not (Path(g["paths"]["exports"])).exists()

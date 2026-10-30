@@ -35,17 +35,18 @@ def decide(name, args, ws, settings=None):
 
 
 def test_table_is_complete_and_locked_rows_deny():
-    for k, (action, desc) in RULES.items():
-        assert action in ("run", "ask", "deny") and desc
+    for k, (action, remember, desc) in RULES.items():
+        assert action in ("run", "ask", "deny") and isinstance(remember, bool) and desc
     assert {r for r in LOCKED} <= set(RULES)
-    assert all(RULES[r][0] == "deny" for r in LOCKED)
+    assert all(RULES[r][0] == "deny" for r in LOCKED - {"weak_sandbox"}) and RULES["weak_sandbox"][0] == "ask"
     important = {"network", "outside_workspace", "delete", "install", "model_download", "model_import",
                  "model_delete", "gpu_long", "big_file", "shell", "send_data"}
     assert all(RULES[r][0] == "ask" for r in important)
-    rows = describe_rules({"approval_rules": {"path_escape": "run", "shell": "deny"}})
+    rows = describe_rules({"approval_rules": {"path_escape": "run", "shell": "deny", "weak_sandbox": "run"}})
     by = {r["rule"]: r for r in rows}
     assert by["path_escape"]["action"] == "deny"        # locked rows cannot be loosened
-    assert by["shell"]["action"] == "deny"
+    assert by["weak_sandbox"]["action"] == "ask" and by["weak_sandbox"]["locked"]
+    assert by["shell"]["action"] == "deny" and by["shell"]["rememberable"] is False
 
 
 @pytest.mark.parametrize("p", ["data/a.csv", "./data/a.csv", "data/../data/a.csv", "new/file.txt", "."])
@@ -171,26 +172,42 @@ def test_session_remember_and_audit(ws, tmp_path):
     pol = Policy(DEFAULT)
     br = ApprovalBroker(store, pol)
     tools = load_all()
-    args = {"command": "ls"}
-    d = pol.decide(tools["run_shell"], args, ctx_for(ws))
-    a = br.request("tool", "run_shell", args, d.reason, "approve", d.rules)
+
+    def ctx(cid="c-1"):
+        return ToolContext(workspace=ws, settings={**DEFAULT, "_conversation_id": cid})
+    # a rememberable ask (approve_tool, no never-remember row): only the exact same arguments, same conversation
+    args = {"name": "demo", "epochs": 3}
+    d = pol.decide(tools["jepa_train"], args, ctx())
+    assert d.action == "ask"
+    a = br.request("tool", "jepa_train", args, d.reason, "approve", d.rules, conversation_id="c-1")
     assert br.decide(a.id, "approve", "session")["status"] == "approved"
-    d2 = pol.decide(tools["run_shell"], {"command": "pwd"}, ctx_for(ws))       # same shape, same rules
+    d2 = pol.decide(tools["jepa_train"], dict(args), ctx())
     assert d2.action == "run" and d2.by == "session"
-    d3 = pol.decide(tools["run_shell"], {"command": "curl http://x"}, ctx_for(ws))   # new rule -> asks again
-    assert d3.action == "ask"
-    # deletes are never remembered
-    a = br.request("tool", "run_shell", {"command": "rm x"}, "r", "approve", ["approve_tool", "shell", "delete"])
+    assert pol.decide(tools["jepa_train"], {**args, "epochs": 4}, ctx()).action == "ask"     # other arguments
+    assert pol.decide(tools["jepa_train"], args, ctx("c-2")).action == "ask"                 # other conversation
+    # shell commands (and deletes, installs, network...) are never remembered
+    a = br.request("tool", "run_shell", {"command": "ls"}, "r", "approve", ["approve_tool", "shell"],
+                   conversation_id="c-1")
     out = br.decide(a.id, "approve", "session")
     assert out["status"] == "approved" and "never remembered" in out["note"]
-    assert pol.decide(tools["run_shell"], {"command": "rm y"}, ctx_for(ws)).action == "ask"
+    assert pol.decide(tools["run_shell"], {"command": "ls"}, ctx()).action == "ask"
+    a = br.request("tool", "run_shell", {"command": "rm x"}, "r", "approve", ["approve_tool", "shell", "delete"],
+                   conversation_id="c-1")
+    out = br.decide(a.id, "approve", "session")
+    assert out["status"] == "approved" and "never remembered" in out["note"]
     # a fresh Policy (backend restart) remembers nothing
-    assert Policy(DEFAULT).decide(tools["run_shell"], {"command": "pwd"}, ctx_for(ws)).action == "ask"
-    # double decisions are refused, unknown ids raise
+    assert Policy(DEFAULT).decide(tools["jepa_train"], args, ctx()).action == "ask"
+    # double decisions are refused, unknown ids raise, a wrong hash approves nothing
     assert br.decide(a.id, "deny")["ok"] is False
     with pytest.raises(KeyError):
         br.decide("a-nope", "approve")
     with pytest.raises(ValueError):
         br.decide(a.id, "maybe")
+    b = br.request("tool", "run_shell", {"command": "pwd"}, "r", "approve", ["approve_tool", "shell"])
+    with pytest.raises(ValueError, match="does not match"):
+        br.decide(b.id, "approve", args_sha256="0" * 64)
+    with pytest.raises(ValueError, match="required"):
+        br.decide(b.id, "approve", require_hash=True)
+    assert br.decide(b.id, "approve", args_sha256=b.args_sha256)["status"] == "approved"
     rows = store.list_approvals()
     assert {r["status"] for r in rows} == {"approved"}

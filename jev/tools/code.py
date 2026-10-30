@@ -1,39 +1,79 @@
-"""Code tools: run Python / Node / shell in the sandbox, install packages into a per-workspace venv,
-scaffold projects, and use JEPA Studio's own models (embed images with a trained run, start training).
+"""Code tools: run Python / Node / shell in the sandbox, install packages into a per-conversation
+venv, scaffold projects, and use JEPA Studio's own models (embed images with a trained run, start
+training).
 
 run_python and run_node auto-run inside the sandbox unless their code trips a row of the approval
-table (network, shell, installs, deletes, paths outside the workspace; see jev/policy.py); run_shell,
-install_package and jepa_train always ask.
+table (network, shell, installs, deletes, paths outside the workspace; see jev/policy.py) or the
+sandbox is weak (the locked weak_sandbox row); run_shell, install_package and jepa_train always ask.
+
+The package venv of a conversation lives in jev-data/venvs/<workspace>, never in the workspace:
+code runs see it read-only (where the OS gives a mount namespace), only an approved
+install_package run can write to it (and then the workspace is read-only), and its interpreter is
+checked to still be this Python before anything runs it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
+import shlex
 import shutil
 import sys
 import threading
 from pathlib import Path
 
 from ..policy import flag, scan_node, scan_python, scan_shell
-from ..sandbox import IS_WIN, Limits, Sandbox, python_for
+from ..sandbox import DATA_DIRNAME, IS_WIN, Limits, Mounts, Sandbox, python_for, sandbox_for, trusted_venv_python
 from .base import ToolContext, ToolError, ToolResult, tool
 from .core import artifact_kind
 
 PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\[[A-Za-z0-9,._-]{1,100}\])?"
                     r"((==|>=|<=|~=|!=|>|<)[A-Za-z0-9.*+!_-]{1,40})?(,(==|>=|<=|~=|!=|>|<)[A-Za-z0-9.*+!_-]{1,40}){0,3}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_SANDBOX_LOCK = threading.Lock()
-_FALLBACK: dict = {}
 
 
 def get_sandbox(ctx: ToolContext) -> Sandbox:
-    sb = ctx.settings.get("_sandbox")
-    if sb is None:
-        with _SANDBOX_LOCK:
-            sb = _FALLBACK.get("sb") or Sandbox(ctx.settings)
-            _FALLBACK["sb"] = sb
-    return sb
+    return sandbox_for(ctx.settings)
+
+
+# ------------------------------------------------------------------------------------- package venv
+def venv_dir(ctx: ToolContext) -> Path:
+    """jev-data/venvs/<workspace folder name>: outside the workspace, so sandboxed code cannot plant
+    an interpreter there."""
+    ws = ctx.workspace.resolve()
+    data = ctx.settings.get("data_dir")
+    if not data and ws.parent.parent.name == DATA_DIRNAME:
+        data = ws.parent.parent
+    if not data:
+        raise ToolError("install_package needs JEV's data folder (jev-data): run it through JEV")
+    name = ws.name if NAME_RE.match(ws.name) else "ws-" + hashlib.sha256(str(ws).encode()).hexdigest()[:16]
+    return Path(data).resolve() / "venvs" / name
+
+
+def _venv_for_run(ctx: ToolContext) -> tuple[Path | None, str]:
+    """(venv, note) for a code run: the conversation's package venv if it exists and is intact."""
+    try:
+        v = venv_dir(ctx)
+    except ToolError:
+        return None, ""
+    if not v.exists():
+        return None, ""
+    if trusted_venv_python(v) is None:
+        return None, ("note: the installed-packages venv failed its integrity check and was not used "
+                      "(install_package recreates it)\n")
+    return v, ""
+
+
+def pip_argv(ctx: ToolContext, packages: list) -> list[str]:
+    """The exact pip command install_package runs (shown on the approval card)."""
+    try:
+        v = venv_dir(ctx)
+    except ToolError:
+        v = Path("<jev-data>") / "venvs" / ctx.workspace.name
+    exe = v / ("Scripts/python.exe" if IS_WIN else "bin/python")
+    return [str(exe), "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--",
+            *[str(p) for p in packages]]
 
 
 def _limits(ctx: ToolContext, timeout_s: int | None = None) -> Limits:
@@ -44,6 +84,8 @@ def _limits(ctx: ToolContext, timeout_s: int | None = None) -> Limits:
 
 
 def _network_ok(ctx: ToolContext) -> bool:
+    """Network for this run only when the decision covered the network (approved by you, remembered
+    is impossible for these rows, or set to "run" in your approval_rules)."""
     approved = set(ctx.settings.get("_approved_rules") or [])
     return bool(approved & {"network", "install", "send_data"})
 
@@ -60,7 +102,7 @@ def _snippet(ctx: ToolContext, code: str, suffix: str) -> Path:
     return p
 
 
-def _result(ctx: ToolContext, res, label: str) -> ToolResult:
+def _result(ctx: ToolContext, res, label: str, note: str = "") -> ToolResult:
     arts = []
     ws = ctx.workspace.resolve()
     for rel in res.changed_files[:20]:
@@ -71,7 +113,7 @@ def _result(ctx: ToolContext, res, label: str) -> ToolResult:
                 arts.append(ctx.artifact(p, kind=k))
             except ToolError:
                 pass
-    return ToolResult(ok=res.ok, content=f"{label}: " + res.summary(),
+    return ToolResult(ok=res.ok, content=note + f"{label}: " + res.summary(),
                       artifacts=arts, data={"returncode": res.returncode, "timed_out": res.timed_out,
                                             "isolation": res.isolation, "seconds": round(res.seconds, 2)})
 
@@ -92,16 +134,17 @@ def _python_needs(args: dict, ctx: ToolContext) -> str | None:
       parameters={"type": "object", "properties": {
           "code": {"type": "string", "maxLength": 200000},
           "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["code"]},
-      risk="sandbox", category="code", needs_approval=_python_needs)
+      risk="sandbox", category="code", needs_approval=_python_needs, runs_code=True)
 def run_python(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
     script = _snippet(ctx, code, ".py")
     ws = str(ctx.workspace.resolve())
     boot = ("import sys, runpy; sys.path.insert(0, sys.argv[1]); sys.argv = [sys.argv[2]]; "
             "runpy.run_path(sys.argv[0], run_name='__main__')")
-    argv = [python_for(ctx.workspace), "-I", "-c", boot, ws, str(script)]
+    venv, note = _venv_for_run(ctx)
+    argv = [python_for(venv=venv), "-I", "-c", boot, ws, str(script)]
     res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
-                               cancelled=ctx.cancelled)
-    return _result(ctx, res, "python")
+                               cancelled=ctx.cancelled, venv=venv, mounts=Mounts(ro=[venv] if venv else []))
+    return _result(ctx, res, "python", note)
 
 
 # ------------------------------------------------------------------------------------- run_node
@@ -115,7 +158,7 @@ def _node_needs(args: dict, ctx: ToolContext) -> str | None:
       parameters={"type": "object", "properties": {
           "code": {"type": "string", "maxLength": 200000},
           "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["code"]},
-      risk="sandbox", category="code", needs_approval=_node_needs)
+      risk="sandbox", category="code", needs_approval=_node_needs, runs_code=True)
 def run_node(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
     node = shutil.which("node")
     if not node:
@@ -139,7 +182,7 @@ def _shell_needs(args: dict, ctx: ToolContext) -> str | None:
           "command": {"type": "string", "maxLength": 20000},
           "shell": {"enum": ["auto", "bash", "sh", "powershell", "cmd"]},
           "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["command"]},
-      risk="approve", category="code", needs_approval=_shell_needs)
+      risk="approve", category="code", needs_approval=_shell_needs, runs_code=True)
 def run_shell(ctx: ToolContext, command: str, shell: str = "auto", timeout_s: int | None = None) -> ToolResult:
     if shell == "auto":
         shell = "powershell" if IS_WIN else ("bash" if shutil.which("bash") else "sh")
@@ -153,26 +196,35 @@ def run_shell(ctx: ToolContext, command: str, shell: str = "auto", timeout_s: in
         argv = [path, "/d", "/s", "/c", command]
     else:
         argv = [path, "-c", command]   # the one place model text reaches a shell, after approval
+    venv, note = _venv_for_run(ctx)
     res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
-                               cancelled=ctx.cancelled)
-    return _result(ctx, res, shell)
+                               cancelled=ctx.cancelled, venv=venv, mounts=Mounts(ro=[venv] if venv else []))
+    return _result(ctx, res, shell, note)
 
 
 # ------------------------------------------------------------------------------------- install_package
 def _install_needs(args: dict, ctx: ToolContext) -> str | None:
-    pk = ", ".join(str(p) for p in args.get("packages") or [])
-    return flag("install", f"pip install {pk} into this workspace's .venv") + "\n" + \
-        flag("network", "downloads from the Python Package Index (pypi.org)")
+    pk = [str(p) for p in args.get("packages") or []]
+    try:
+        where = str(venv_dir(ctx))
+    except ToolError:
+        where = "jev-data/venvs"
+    return flag("install", f"pip install {', '.join(pk)} into this conversation's package venv ({where}); exact "
+                           f"command: {shlex.join(pip_argv(ctx, pk))}") + "\n" + \
+        flag("network", "downloads from the Python Package Index (pypi.org); only the venv and pip's cache are "
+                        "writable during the install, the workspace is read-only")
 
 
 @tool(name="install_package",
       description="Install Python packages with pip into this conversation's own virtual environment "
-                  "(workspace/.venv; run_python then uses it). ALWAYS asks the user first.",
+                  "(kept in jev-data, outside the workspace; run_python then uses it). ALWAYS asks the user first.",
       parameters={"type": "object", "properties": {
           "packages": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
           "manager": {"enum": ["pip"]}}, "required": ["packages"]},
-      risk="approve", category="code", needs_approval=_install_needs)
+      risk="approve", category="code", needs_approval=_install_needs, runs_code=True)
 def install_package(ctx: ToolContext, packages: list, manager: str = "pip") -> ToolResult:
+    from ..settings import private_dir
+
     bad = [p for p in packages if not PKG_RE.match(p)]
     if bad:
         raise ToolError(f"not a plain package name/version: {', '.join(bad)} (options, URLs and paths are refused)")
@@ -180,19 +232,33 @@ def install_package(ctx: ToolContext, packages: list, manager: str = "pip") -> T
     base = _limits(ctx)
     lim = Limits(**{**base.__dict__, "wall_seconds": max(base.wall_seconds, 900),
                     "cpu_seconds": max(base.cpu_seconds, 600)})
-    venv = ctx.workspace / ".venv"
+    venv = venv_dir(ctx)
+    root = private_dir(venv.parent)
+    cache = private_dir(root / "pip-cache")
+    tmp = private_dir(root / f"{venv.name}.tmp")
     log = []
+    if venv.exists() and trusted_venv_python(venv) is None:
+        shutil.rmtree(venv, ignore_errors=True)
+        log.append("the existing package venv failed its integrity check (its interpreter or pyvenv.cfg had "
+                   "changed), so it was deleted and created again")
     if not venv.exists():
+        private_dir(venv)
+        # the trusted interpreter (this Python, never a file from the workspace) creates the venv
         res = sb.run([sys.executable, "-I", "-m", "venv", "--system-site-packages", str(venv)], ctx.workspace, lim,
-                     cancelled=ctx.cancelled)
+                     cancelled=ctx.cancelled, mounts=Mounts(rw=[venv, tmp], workspace_writable=False), tmp=tmp,
+                     honor_network_setting=False)
         if not res.ok:
-            return ToolResult(False, "could not create the workspace venv: " + res.summary())
-        log.append("created .venv (sees this computer's packages, installs go into the workspace)")
-    py = python_for(ctx.workspace)
-    res = sb.run([py, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--", *packages],
-                 ctx.workspace, lim, network=True, cancelled=ctx.cancelled)
+            return ToolResult(False, "could not create the package venv: " + res.summary())
+        log.append(f"created the package venv {venv} (sees this computer's packages; installs go into it)")
+    if trusted_venv_python(venv) is None:
+        return ToolResult(False, f"refused: {venv} does not hold this Python's interpreter; nothing was installed")
+    argv = pip_argv(ctx, packages)
+    res = sb.run(argv, ctx.workspace, lim, network=True, cancelled=ctx.cancelled, venv=venv, tmp=tmp,
+                 mounts=Mounts(rw=[venv, cache, tmp], workspace_writable=False),
+                 extra_env={"PIP_CACHE_DIR": str(cache), "PIP_NO_INPUT": "1"})
+    log.append("$ " + shlex.join(argv))
     log.append(res.summary(2500))
-    return ToolResult(res.ok, "\n".join(log), data={"packages": packages})
+    return ToolResult(res.ok, "\n".join(log), data={"packages": packages, "venv": str(venv)})
 
 
 # ------------------------------------------------------------------------------------- create_project

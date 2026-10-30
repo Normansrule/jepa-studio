@@ -1,4 +1,5 @@
-"""Run model-written code as a contained subprocess inside the conversation's workspace.
+"""Run model-written code (and the media tools' FFmpeg) as a contained subprocess inside the
+conversation's workspace.
 
 What every run gets, on every OS:
   * cwd = the workspace; HOME / USERPROFILE / TMPDIR point inside it
@@ -7,33 +8,52 @@ What every run gets, on every OS:
   * a wall-clock timeout; on timeout or cancel the whole process tree is killed
   * stdout / stderr captured and capped (STREAM_CAP bytes each, the rest is counted and dropped)
   * no shell: argv lists only (run_shell passes its text to `bash -c` explicitly, after approval)
+  * a cap on the workspace's total size (limits.max_workspace_mb): a run does not start while the
+    workspace is over it, and a run that pushes it over reports an error
 
 POSIX (Linux, macOS) adds resource limits, set by a tiny launcher that calls setrlimit() and then
-exec()s the program (subprocess's preexec_fn is not safe in a threaded server):
+starts the program (subprocess's preexec_fn is not safe in a threaded server):
   RLIMIT_CPU (cpu_seconds), memory (RLIMIT_DATA on Linux, which counts heap and anonymous memory but
   not the large address-space reservations V8 and CUDA make; RLIMIT_AS elsewhere; macOS does not
   enforce either), RLIMIT_FSIZE (max_output_mb per file, SIGXFSZ ignored so writes fail with EFBIG),
   RLIMIT_NPROC (your current process count + 256: a fork-bomb brake), RLIMIT_NOFILE (512),
-  RLIMIT_CORE (0). The process runs in its own session; on timeout every descendant found is killed.
+  RLIMIT_CORE (0). On Linux the launcher stays as a "child subreaper": every process the program
+  leaves behind (even after double-forking and setsid()) is re-parented to it and killed when the
+  program ends or the run is stopped.
 
 Isolation layers, detected by a probe at startup (Sandbox.capabilities() reports what the probe
 actually observed, never what we hope):
   Linux  bwrap (bubblewrap): new network namespace (only `lo`, which is not the host's loopback, so
          even the JEPA Studio backend is unreachable), new PID namespace (the whole tree dies with
-         it), the file system read-only except the workspace, /tmp private, your home folder hidden
-         (the Python install is re-exposed read-only), docker/podman sockets masked.
-         unshare --user --net: network namespace only (when bwrap is missing or blocked).
-  macOS  sandbox-exec with a profile denying network and file writes outside the workspace
-         (Apple marks sandbox-exec deprecated; the probe checks it still works).
-  Windows  a Job Object (kill-on-close, job memory limit, CPU time, max 64 processes). No network
-         or file-system isolation: docs/jev/SAFETY.md says what that means.
+         it), the file system read-only except the workspace; /tmp, /run, /var/run, your home
+         folder, /mnt, /media, jev-data (settings.json, jev.db, other conversations) hidden behind
+         read-only or size-capped tmpfs (the Python / Node / FFmpeg installs are re-exposed
+         read-only), docker/podman sockets masked, AF_VSOCK sockets refused (seccomp), WSL's
+         /init and interop sockets hidden.
+         unshare --user --mount --pid --net: a network and PID namespace plus a mount namespace in
+         which jev-data, the other workspaces and /run are hidden (when bwrap is missing or
+         blocked). The rest of the file system stays writable, so this counts as a weak sandbox.
+  macOS  sandbox-exec with a (deny default) profile: no network, writes only in the workspace, no
+         programs except the interpreter's own tree (Apple marks sandbox-exec deprecated; the probe
+         checks it still works). Until a maintainer has verified the profile on a Mac
+         (MACOS_PROFILE_VERIFIED), macOS counts as a weak sandbox.
+  Windows  a Job Object (kill-on-close, job memory limit, CPU time, max 64 processes); a run is
+         refused if the job cannot be created or the process cannot be put into it. No network or
+         file-system isolation: a weak sandbox. docs/jev/SAFETY.md says what that means.
+
+On a weak sandbox (no file-system or no network isolation) the policy's locked `weak_sandbox` row
+makes every tool that runs code or FFmpeg ask first (jev/policy.py).
 """
 from __future__ import annotations
 
+import json
 import os
+import platform
 import re
 import shutil
 import signal
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -52,10 +72,26 @@ PASS_ENV = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NUMBER_OF_PRO
 NET_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE",
            "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "PIP_CERT",
            "NODE_EXTRA_CA_CERTS")
+NET_FILE_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "PIP_CERT", "NODE_EXTRA_CA_CERTS")
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+DATA_DIRNAME = "jev-data"
+# Flip to True only after a maintainer has run the checks in docs/jev/SAFETY.md ("Verifying the
+# macOS profile") on a real Mac. Until then macOS code runs count as a weak sandbox and ask first.
+MACOS_PROFILE_VERIFIED = False
+# /run entries some systems need inside the sandbox (NixOS keeps its system and its NVIDIA / OpenGL
+# driver libraries there); they are recreated as read-only symlinks, everything else in /run is hidden
+RUN_KEEP = ("/run/current-system", "/run/booted-system", "/run/opengl-driver", "/run/opengl-driver-32")
 
-# Sets rlimits then execs argv[2:]. Runs with `python -I -S` so nothing from the workspace is imported.
+
+class SandboxError(RuntimeError):
+    """The run could not be started safely (and was not started)."""
+
+
+# Sets rlimits, then (Linux) stays as a child subreaper that kills whatever the program leaves
+# behind, or (elsewhere) execs the program. Runs with `python -I -S` so nothing from the workspace
+# is imported.
 LAUNCHER = r"""
 import os, resource as r, signal, sys
 cpu, mem, fsize, nproc, nofile, kind = (int(x) for x in sys.argv[1].split(","))
@@ -76,12 +112,150 @@ if hasattr(r, "RLIMIT_NPROC"):
 s(r.RLIMIT_NOFILE, nofile)
 s(r.RLIMIT_CORE, 0)
 signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
-os.execvp(sys.argv[2], sys.argv[2:])
+argv = sys.argv[2:]
+reaper = False
+if sys.platform.startswith("linux"):
+    try:
+        import ctypes
+        reaper = ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0   # PR_SET_CHILD_SUBREAPER
+    except Exception:
+        reaper = False
+if not reaper:
+    os.execvp(argv[0], argv)
+pid = os.fork()
+if pid == 0:
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as e:
+        sys.stderr.write(f"could not start {argv[0]}: {e}\n")
+        os._exit(127)
+def fwd(sig, _frame):
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+for sg in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(sg, fwd)
+status = 0
+while True:
+    try:
+        p, st = os.waitpid(-1, 0)
+    except ChildProcessError:
+        break
+    except InterruptedError:
+        continue
+    if p == pid:
+        status = st
+        break
+me = str(os.getpid())
+def children():
+    out = []
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                with open(f"/proc/{d}/stat", "rb") as f:
+                    if f.read().rsplit(b")", 1)[1].split()[1].decode() == me:
+                        out.append(int(d))
+            except (OSError, IndexError):
+                pass
+    return out
+import time
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    kids = children()
+    if not kids:
+        break
+    for k in kids:
+        try:
+            os.kill(k, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    while True:
+        try:
+            if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                break
+        except ChildProcessError:
+            break
+    time.sleep(0.01)
+if os.WIFSIGNALED(status):
+    sig = os.WTERMSIG(status)
+    try:
+        signal.signal(sig, signal.SIG_DFL)
+        os.kill(os.getpid(), sig)
+    except (OSError, ValueError):
+        pass
+    os._exit(128 + sig)
+os._exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+"""
+
+# unshare mode: runs as PID 1 of the new namespaces, hides jev-data, the other workspaces and /run
+# behind read-only tmpfs mounts, binds the workspace (and the package venv) back, then execs.
+PRELUDE = r"""
+import ctypes, json, os, sys
+spec = json.loads(sys.argv[1])
+argv = sys.argv[2:]
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_char_p]
+RDONLY, NOSUID, NODEV, NOEXEC, REMOUNT, BIND, REC, PRIVATE = 1, 2, 4, 8, 32, 4096, 16384, 1 << 18
+def mount(src, dst, fs, flags, data=None):
+    b = lambda x: x.encode() if isinstance(x, str) else x
+    if libc.mount(b(src), b(dst), b(fs), flags, b(data)) != 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"mount {dst}: {os.strerror(e)}")
+def kept(path):
+    f, out = os.statvfs(path).f_flag, 0
+    for st, ms in ((2, NOSUID), (4, NODEV), (8, NOEXEC), (1024, 1024), (2048, 2048), (4096, 1 << 21)):
+        if f & st:
+            out |= ms
+    return out
+try:
+    mount(None, "/", None, REC | PRIVATE)
+    binds = [(p, False) for p in spec["ro"]] + [(p, True) for p in spec["rw"]] + [(spec["ws"], spec["ws_rw"])]
+    fds = {}
+    for p, _ in binds:
+        if os.path.exists(p):
+            fds[p] = os.open(p, os.O_PATH | os.O_CLOEXEC)
+    hidden = []
+    for h in spec["hide"]:
+        if os.path.isdir(h) and not os.path.islink(h):
+            mount("tmpfs", h, "tmpfs", NOSUID | NODEV, "mode=0755,size=4m")
+            hidden.append(h)
+    for target, dest in spec["symlinks"]:
+        if not os.path.lexists(dest):
+            os.symlink(target, dest)
+    for p, rw in binds:
+        if p not in fds:
+            continue
+        src = f"/proc/self/fd/{fds[p]}"
+        if not os.path.exists(p):
+            if os.path.isdir(src):
+                os.makedirs(p, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                open(p, "a").close()
+        mount(src, p, None, BIND | REC)
+        if not rw:
+            mount(None, p, None, REMOUNT | BIND | RDONLY | kept(p))
+    for h in hidden:
+        mount(None, h, None, REMOUNT | BIND | RDONLY | NOSUID | NODEV)
+    os.chdir(spec["cwd"])
+    if spec.get("seccomp"):
+        prog = bytes.fromhex(spec["seccomp"])
+        class Fprog(ctypes.Structure):
+            _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_char_p)]
+        fp = Fprog(len(prog) // 8, prog)
+        libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
+        if libc.prctl(38, 1, None, 0, 0) != 0 or libc.prctl(22, 2, ctypes.addressof(fp), 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "seccomp filter could not be installed")
+except OSError as e:
+    sys.stderr.write(f"JEV sandbox setup failed, not running: {e}\n")
+    os._exit(126)
+os.execvp(argv[0], argv)
 """
 
 PROBE = r"""
 import os, socket, sys
-ws = sys.argv[1]
+ws, outside, protected = sys.argv[1:4]
 try:
     ifs = sorted(n for _, n in socket.if_nameindex())
 except OSError:
@@ -93,10 +267,11 @@ except OSError as e:
     rc = e.errno or -1
 net = "blocked" if rc in (101, 113, 1, 13, 10051, 10065) or ifs == ["lo"] else "open"
 open(os.path.join(ws, "probe.txt"), "w").write("x")
-try:
-    open(os.path.join(os.path.dirname(ws), "jev-escape-probe.txt"), "w").write("x")
-except OSError:
-    pass
+for d in (outside, protected):
+    try:
+        open(os.path.join(d, "jev-escape-probe.txt"), "w").write("x")
+    except OSError:
+        pass
 print("JEVPROBE", ",".join(ifs), net)
 """
 
@@ -108,11 +283,22 @@ class Limits:
     wall_seconds: int = 300
     max_output_mb: int = 200
     max_file_mb: int = 500
+    max_workspace_mb: int = 2048
 
     @classmethod
     def from_settings(cls, s: dict | None) -> "Limits":
         d = dict((s or {}).get("limits") or {})
         return cls(**{k: int(v) for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class Mounts:
+    """Extra paths for one run. `ro` are made visible read-only (re-exposed when hidden), `rw` are
+    writable (only install_package uses this: its venv and pip's cache). `workspace_writable=False`
+    turns the workspace itself read-only for the run."""
+    ro: list = field(default_factory=list)
+    rw: list = field(default_factory=list)
+    workspace_writable: bool = True
 
 
 @dataclass
@@ -127,12 +313,17 @@ class RunResult:
     limit_hit: str | None = None
     changed_files: list[str] = field(default_factory=list)
     isolation: str = "none"
+    refused: str | None = None          # the run was not started (why)
+    workspace_over: str | None = None   # the run pushed the workspace over max_workspace_mb
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out and not self.cancelled
+        return self.returncode == 0 and not self.timed_out and not self.cancelled and not self.refused \
+            and not self.workspace_over
 
     def summary(self, max_chars: int = 3500) -> str:
+        if self.refused:
+            return f"not run: {self.refused}"
         head = f"exit code {self.returncode}" if self.returncode is not None else "killed"
         if self.timed_out:
             head = f"stopped: wall-clock limit reached after {self.seconds:.0f} s"
@@ -141,6 +332,8 @@ class RunResult:
         elif self.limit_hit:
             head += f" ({self.limit_hit})"
         parts = [head + f", {self.seconds:.1f} s"]
+        if self.workspace_over:
+            parts.append("ERROR: " + self.workspace_over)
         half = max_chars // 2
         if self.stdout.strip():
             parts.append("stdout:\n" + _clip(self.stdout, half))
@@ -158,25 +351,29 @@ def _clip(s: str, n: int) -> str:
     return s[: n * 2 // 3].rstrip() + f"\n[... {len(s) - n} characters cut ...]\n" + s[-n // 3:].rstrip()
 
 
-def scrubbed_env(workspace: Path, extra: dict | None = None, network: bool = False) -> dict:
+def scrubbed_env(workspace: Path, extra: dict | None = None, network: bool = False, venv: Path | None = None,
+                 tmp: Path | None = None) -> dict:
     env = {}
     for k in PASS_ENV + (NET_ENV if network else ()):
         v = os.environ.get(k)
         if v is not None and not SECRET_RE.search(k):
             env[k] = v
     env.setdefault("PATH", os.defpath)
-    tmp = workspace / ".tmp"
-    tmp.mkdir(parents=True, exist_ok=True)
+    tmp = tmp or workspace / ".tmp"
+    try:
+        tmp.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     threads = str(max(1, min(4, os.cpu_count() or 1)))
     env.update({"HOME": str(workspace), "USERPROFILE": str(workspace), "TMPDIR": str(tmp), "TEMP": str(tmp),
                 "TMP": str(tmp), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8",
                 "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg",
-                "MPLCONFIGDIR": str(tmp / "mpl"), "OMP_NUM_THREADS": threads, "OPENBLAS_NUM_THREADS": threads,
+                "MPLCONFIGDIR": str(tmp / "mpl"), "XDG_CACHE_HOME": str(tmp / "cache"),
+                "OMP_NUM_THREADS": threads, "OPENBLAS_NUM_THREADS": threads,
                 "MKL_NUM_THREADS": threads, "NO_COLOR": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
                 "PIP_NO_INPUT": "1", "npm_config_update_notifier": "false"})
-    venv = workspace / ".venv"
-    if venv.is_dir():
-        bindir = venv / ("Scripts" if IS_WIN else "bin")
+    if venv is not None:
+        bindir = Path(venv) / ("Scripts" if IS_WIN else "bin")
         env["VIRTUAL_ENV"] = str(venv)
         env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
     for k, v in (extra or {}).items():
@@ -185,11 +382,65 @@ def scrubbed_env(workspace: Path, extra: dict | None = None, network: bool = Fal
     return env
 
 
-def python_for(workspace: Path) -> str:
-    """The workspace venv's interpreter when install_package made one, else this Python."""
-    venv = workspace / ".venv"
+def python_for(workspace: Path | None = None, venv: Path | None = None) -> str:
+    """The interpreter for a code run: the conversation's package venv (kept in jev-data, never in
+    the workspace) when it exists and its interpreter is still this Python, else this Python."""
+    if venv is not None:
+        exe = trusted_venv_python(venv)
+        if exe is not None:
+            return str(exe)
+    return sys.executable
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def trusted_venv_python(venv: Path) -> Path | None:
+    """`venv`'s interpreter if it is still the trusted base interpreter (POSIX: a symlink resolving
+    to this Python; Windows: byte-identical to the venv launcher or base python.exe), else None.
+    Anything else (a planted script, a swapped binary) is never executed."""
+    venv = Path(venv)
     exe = venv / ("Scripts/python.exe" if IS_WIN else "bin/python")
-    return str(exe) if exe.exists() else sys.executable
+    try:
+        st = exe.lstat()
+    except OSError:
+        return None
+    bases = {Path(sys.executable).resolve()}
+    base_exe = getattr(sys, "_base_executable", None)
+    if base_exe:
+        bases.add(Path(base_exe).resolve())
+    try:
+        cfg = (venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    home = next((ln.split("=", 1)[1].strip() for ln in cfg.splitlines() if ln.split("=", 1)[0].strip() == "home"), "")
+    homes = {Path(sys.executable).parent.resolve(), *(b.parent for b in bases)}
+    if base_exe:
+        homes.add(Path(base_exe).parent.resolve())
+    if not home or Path(home).resolve() not in homes:
+        return None                          # pyvenv.cfg points the interpreter somewhere else
+    if not IS_WIN:
+        if stat.S_ISLNK(st.st_mode) or stat.S_ISREG(st.st_mode):
+            real = exe.resolve()
+            if any(_same_file(real, b) for b in bases) or real in bases:
+                return exe
+        return None
+    import hashlib
+    import venv as _venv_mod
+    want = set()
+    for cand in [Path(_venv_mod.__file__).parent / "scripts" / "nt" / "python.exe", *bases]:
+        try:
+            want.add(hashlib.sha256(cand.read_bytes()).hexdigest())
+        except OSError:
+            pass
+    try:
+        return exe if hashlib.sha256(exe.read_bytes()).hexdigest() in want else None
+    except OSError:
+        return None
 
 
 def snapshot(workspace: Path, limit: int = 5000) -> dict[str, tuple[int, int]]:
@@ -208,6 +459,25 @@ def snapshot(workspace: Path, limit: int = 5000) -> dict[str, tuple[int, int]]:
     return out
 
 
+def workspace_usage(workspace: Path, max_entries: int = 500_000) -> int:
+    """Bytes the workspace uses on disk (every file, caches and .tmp included; allocated blocks on
+    POSIX, so a sparse file counts for what it really occupies)."""
+    total, n = 0, 0
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        for fn in filenames + dirnames:
+            n += 1
+            if n > max_entries:
+                return total
+            try:
+                st = os.lstat(os.path.join(dirpath, fn))
+            except OSError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                continue
+            total += st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+    return total
+
+
 def _user_process_count() -> int:
     try:
         import psutil
@@ -221,6 +491,179 @@ def _sbpl_quote(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _under(p: Path, parent: Path) -> bool:
+    return p == parent or parent in p.parents
+
+
+def _home() -> Path | None:
+    try:
+        h = Path.home().resolve()
+    except (RuntimeError, OSError):
+        return None
+    return h if h != Path("/") else None
+
+
+# ---------------------------------------------------------------------------------------- helpers
+def bwrap_supports_size(version_text: str) -> bool:
+    """bubblewrap 0.10.0 added `--size` for --tmpfs."""
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", version_text or "")
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (0, 10)
+
+
+_BWRAP_VERSION: dict = {}
+
+
+def _bwrap_version() -> str:
+    if "v" not in _BWRAP_VERSION:
+        try:
+            _BWRAP_VERSION["v"] = subprocess.run(["bwrap", "--version"], capture_output=True, text=True,
+                                                 timeout=10).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            _BWRAP_VERSION["v"] = ""
+    return _BWRAP_VERSION["v"]
+
+
+def wsl_info(proc: str = "/proc", run: str = "/run") -> dict:
+    """Is this WSL, and is Windows interop (running .exe files from Linux) switched on?"""
+    def read(p):
+        try:
+            return Path(p).read_text(errors="replace")
+        except OSError:
+            return ""
+    rel = (read(f"{proc}/sys/kernel/osrelease") + read(f"{proc}/version")).lower()
+    detected = "microsoft" in rel or "wsl" in rel or os.path.isdir(f"{run}/WSL")
+    interop = False
+    for name in ("WSLInterop", "WSLInterop-late"):
+        txt = read(f"{proc}/sys/fs/binfmt_misc/{name}")
+        if txt.strip().startswith("enabled"):
+            interop = True
+    win_path = any(p.startswith("/mnt/") and ("Windows" in p or "/c/" in p) for p in
+                   os.environ.get("PATH", "").split(os.pathsep))
+    return {"detected": bool(detected), "interop_enabled": bool(detected and interop),
+            "windows_path_in_PATH": bool(detected and win_path)}
+
+
+def seccomp_program(machine: str | None = None) -> bytes | None:
+    """A classic-BPF seccomp filter for bwrap: socket(AF_VSOCK, ...) fails with EAFNOSUPPORT (WSL2
+    and VMs talk to their host over vsock, which network namespaces do not isolate); syscalls from
+    other ABIs (32-bit, x32) fail with ENOSYS so they cannot get around that check; the rest is
+    allowed. None for machines we have no syscall numbers for."""
+    arch = {"x86_64": (0xC000003E, 41, True), "amd64": (0xC000003E, 41, True),
+            "aarch64": (0xC00000B7, 198, False), "arm64": (0xC00000B7, 198, False)}.get(
+        (machine or platform.machine()).lower())
+    if arch is None:
+        return None
+    audit_arch, nr_socket, x32 = arch
+    allow, errno_ = 0x7FFF0000, 0x00050000
+    ld, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
+    prog: list[tuple[int, int, int, int]] = [
+        (ld, 0, 0, 4),                          # A = arch
+        (jeq, 1, 0, audit_arch),                # native ABI -> continue, else
+        (ret, 0, 0, errno_ | 38),               # ENOSYS
+        (ld, 0, 0, 0),                          # A = syscall number
+    ]
+    if x32:
+        prog += [(jge, 0, 1, 0x40000000), (ret, 0, 0, errno_ | 38)]
+    prog += [
+        (jeq, 0, 3, nr_socket),                 # socket()? else allow
+        (ld, 0, 0, 16),                         # A = args[0] (domain, low 32 bits)
+        (jeq, 0, 1, 40),                        # AF_VSOCK
+        (ret, 0, 0, errno_ | 97),               # EAFNOSUPPORT
+        (ret, 0, 0, allow),
+    ]
+    return b"".join(struct.pack("=HBBI", *i) for i in prog)
+
+
+def macos_profile(ws: Path, network: bool = False, *, read_only=(), writable=(), hide=(), exec_paths=(),
+                  shell: bool = False) -> str:
+    """The sandbox-exec (SBPL) profile for one run, built from (deny default); later rules win.
+
+    Reads: the system libraries and frameworks, the interpreter installs in `read_only` and the
+    workspace; `hide` (jev-data, other workspaces) stays unreadable. Writes: the workspace and
+    `writable` only. Programs: only those under `exec_paths` (the interpreter's own install; for
+    run_shell, after approval, also /bin and /usr/bin), and never open, osascript, launchctl or
+    the AppleScript/automation tools. Network: none unless `network`. Mach services: only the few
+    lookups a Python or Node process needs; LaunchServices, AppleEvents and the pasteboard are
+    denied, so `open -a` and `osascript` cannot reach the GUI session even if started.
+    Not yet verified on a real Mac: see MACOS_PROFILE_VERIFIED and docs/jev/SAFETY.md."""
+    q = _sbpl_quote
+
+    def subpaths(paths):
+        return " ".join(f"(subpath {q(str(p))})" for p in paths)
+    ws_s = str(ws)
+    rules = [
+        "(version 1)",
+        "(deny default)",
+        ";; JEV run profile: deny everything, then allow the minimum (no (import \"system.sb\"))",
+        "(allow process-fork)",
+        "(allow signal (target same-sandbox))",
+        "(allow sysctl-read)",
+        "(allow file-read-metadata)",
+        "(allow file-read* (literal \"/\") (subpath \"/System\") (subpath \"/usr/lib\") (subpath \"/usr/share\")"
+        " (subpath \"/Library/Frameworks\") (subpath \"/private/etc\") (subpath \"/private/var/db/timezone\")"
+        " (subpath \"/private/var/db/dyld\") (subpath \"/usr/local\") (subpath \"/opt/homebrew\")"
+        " (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/random\") (literal \"/dev/urandom\")"
+        " (literal \"/dev/dtracehelper\") (regex #\"^/dev/fd/\"))",
+        "(allow file-read* " + subpaths([ws, *read_only, *writable]) + ")",
+        "(allow file-write* (subpath " + q(ws_s) + ")" + (" " + subpaths(writable) if writable else "") +
+        " (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/fd/\"))",
+        "(allow file-ioctl (literal \"/dev/dtracehelper\"))",
+        "(allow process-exec* " + subpaths([*exec_paths, *(("/bin", "/usr/bin") if shell else ())]) + ")",
+        "(deny process-exec* (literal \"/usr/bin/open\") (literal \"/usr/bin/osascript\")"
+        " (literal \"/usr/bin/osacompile\") (literal \"/bin/launchctl\") (literal \"/usr/bin/automator\")"
+        " (literal \"/usr/bin/shortcuts\") (literal \"/usr/bin/pbcopy\") (literal \"/usr/bin/pbpaste\"))",
+        "(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\")"
+        " (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.logd\")"
+        " (global-name \"com.apple.system.logger\"))",
+        "(allow ipc-posix-shm-read* ipc-posix-shm-write-data ipc-posix-shm-write-create ipc-posix-sem)",
+        "(deny mach-lookup (global-name \"com.apple.coreservices.launchservicesd\")"
+        " (global-name \"com.apple.coreservices.appleevents\") (global-name \"com.apple.pasteboard.1\")"
+        " (global-name \"com.apple.windowserver.active\"))",
+    ]
+    if hide:
+        rules.append("(deny file-read* file-write* " + subpaths(hide) + ")")
+        rules.append("(allow file-read* file-write* (subpath " + q(ws_s) + ")" +
+                     (" " + subpaths(writable) if writable else "") + ")")
+        if read_only:
+            rules.append("(allow file-read* " + subpaths(read_only) + ")")
+    if network:
+        rules.append("(allow network-outbound) (allow network-inbound (local ip \"localhost:*\")) (allow system-socket)"
+                     " (allow mach-lookup (global-name \"com.apple.dnssd.service\")"
+                     " (global-name \"com.apple.trustd\") (global-name \"com.apple.SecurityServer\"))")
+    return "\n".join(rules)
+
+
+@dataclass
+class Spawned:
+    """A process started by Sandbox.spawn. Call finish() exactly once when done with it."""
+    proc: subprocess.Popen
+    sandbox: "Sandbox"
+    workspace: Path
+    limits: Limits
+    method: str
+    job: object = None
+    unit: str | None = None
+    check_workspace: bool = True
+    _finished: bool = False
+
+    def kill(self) -> None:
+        self.sandbox._kill_tree(self.proc, self.job, self.unit)
+
+    def finish(self) -> str | None:
+        """Kill leftovers, release the job, and return an error text if the workspace is now over
+        its size limit (None otherwise)."""
+        if self._finished:
+            return None
+        self._finished = True
+        self.kill()
+        if self.job:
+            self.job.close()
+        if self.check_workspace:
+            return self.sandbox.workspace_over(self.workspace, self.limits)
+        return None
+
+
+# ---------------------------------------------------------------------------------------- sandbox
 class Sandbox:
     def __init__(self, settings: dict | None = None):
         s = settings or {}
@@ -229,8 +672,11 @@ class Sandbox:
         self.hide_home = bool(sb.get("hide_home", True))
         self.network_allowed = bool(s.get("network_allowed", False))
         self.limits = Limits.from_settings(s)
+        self.data_dir = Path(s["data_dir"]).resolve() if s.get("data_dir") else None
+        self.workspace_root = Path(s["workspace_root"]).resolve() if s.get("workspace_root") else None
         self._caps: dict | None = None
         self._lock = threading.Lock()
+        self._wsl: dict | None = None
 
     # ------------------------------------------------------------------ detection
     def capabilities(self) -> dict:
@@ -243,14 +689,45 @@ class Sandbox:
         caps["limits"] = self.limits.__dict__.copy()
         return caps
 
+    def wsl(self) -> dict:
+        if self._wsl is None:
+            self._wsl = wsl_info() if IS_LINUX else {"detected": False, "interop_enabled": False,
+                                                    "windows_path_in_PATH": False}
+        return self._wsl
+
+    def _finish_caps(self, base: dict) -> dict:
+        reasons = []
+        if not base.get("fs_isolated"):
+            reasons.append(f"no file-system isolation (method {base['method']})")
+        if not base.get("net_isolated"):
+            reasons.append(f"no network isolation (method {base['method']})")
+        if base["method"] == "sandbox-exec" and not MACOS_PROFILE_VERIFIED:
+            reasons.append("the macOS sandbox profile has not been verified on a Mac yet")
+        base["weak"] = bool(reasons)
+        base["weak_reasons"] = reasons
+        w = self.wsl()
+        base["wsl"] = dict(w)
+        notes = []
+        if w.get("interop_enabled"):
+            notes.append("WSL interop is on: Windows programs can be started from Linux. JEV hides /init, "
+                         "/run/WSL, /mnt and blocks vsock inside bubblewrap, but turn interop off for a stronger "
+                         "boundary ([interop] enabled=false in /etc/wsl.conf; see docs/jev/SAFETY.md)")
+        if w.get("windows_path_in_PATH"):
+            notes.append("Windows folders are on PATH (appendWindowsPath); set appendWindowsPath=false")
+        base["isolation_notes"] = notes
+        base["isolation"] = "weak" if reasons else ("weaker (WSL interop)" if w.get("interop_enabled") else "strong")
+        return base
+
     def _detect(self) -> dict:
         base = {"os": sys.platform, "method": "none", "network_isolation": "not available",
                 "filesystem": "not enforced (code can read and write anything your user can)",
                 "rlimits": "not available" if IS_WIN else
-                ("cpu, data, fsize, nproc, nofile" if sys.platform.startswith("linux") else
+                ("cpu, data, fsize, nproc, nofile" if IS_LINUX else
                  "cpu, fsize, nproc, nofile (macOS does not enforce memory rlimits)"),
-                "process_tree_kill": "job object" if IS_WIN else "session + descendant walk",
-                "windows_job": False, "probe": None}
+                "process_tree_kill": "job object" if IS_WIN else
+                ("subreaper launcher + session + descendant walk" if IS_LINUX else "session + descendant walk"),
+                "windows_job": False, "probe": None, "fs_isolated": False, "net_isolated": False,
+                "data_dir_protected": False, "tmpfs_size_limit": False, "cgroup_scope": False}
         if IS_WIN:
             try:
                 self._win_job_create(64, 1, 1).close()
@@ -258,13 +735,13 @@ class Sandbox:
                             rlimits="job object: memory, CPU time, 64 processes, kill on close")
             except Exception as e:  # noqa: BLE001
                 base["probe"] = f"job object unavailable: {e}"
-            return base
+            return self._finish_caps(base)
         order = {"auto": ["bwrap", "unshare", "sandbox-exec"], "none": []}.get(self.mode, [self.mode])
         notes = []
         for method in order:
             if method == "sandbox-exec" and not IS_MAC:
                 continue
-            if method in ("bwrap", "unshare") and not sys.platform.startswith("linux"):
+            if method in ("bwrap", "unshare") and not IS_LINUX:
                 continue
             if not shutil.which(method):
                 notes.append(f"{method}: not installed")
@@ -272,128 +749,356 @@ class Sandbox:
             res = self._probe(method)
             notes.append(f"{method}: {res}")
             if res and res.startswith("JEVPROBE"):
-                _, ifs, net, fs = res.split()
+                _, ifs, net, fs, prot = res.split()
                 if net != "blocked":
                     continue
-                base.update(method=method, network_isolation="enforced", probe="; ".join(notes))
-                if fs == "blocked":
-                    base["filesystem"] = ("read-only outside the workspace; home folder and /mnt, /media hidden"
-                                          if method == "bwrap" and self.hide_home else
-                                          "read-only outside the workspace")
-                return base
+                base.update(method=method, network_isolation="enforced", probe="; ".join(notes),
+                            net_isolated=True, data_dir_protected=prot == "protected")
+                if method == "unshare":
+                    base["process_tree_kill"] = "PID namespace (unshare --pid --kill-child)"
+                    base["filesystem"] = ("not enforced outside jev-data: jev-data, the other workspaces and /run "
+                                          "are hidden, everything else your user can write is writable"
+                                          if prot == "protected" else base["filesystem"])
+                elif fs == "blocked":
+                    base["fs_isolated"] = True
+                    if method == "bwrap":
+                        base["process_tree_kill"] = "PID namespace (bwrap)"
+                        base["tmpfs_size_limit"] = bwrap_supports_size(_bwrap_version())
+                        base["filesystem"] = ("read-only outside the workspace; home folder, /mnt, /media, /run, "
+                                              "jev-data and other workspaces hidden" if self.hide_home else
+                                              "read-only outside the workspace; /run, jev-data and other "
+                                              "workspaces hidden")
+                    else:
+                        base["filesystem"] = "read-only outside the workspace"
+                return self._finish_caps(base)
         base["probe"] = "; ".join(notes) or None
-        return base
+        if IS_LINUX and self._systemd_scope_ok():
+            base["cgroup_scope"] = True
+            base["process_tree_kill"] = "systemd --user scope (cgroup) + subreaper launcher"
+        return self._finish_caps(base)
+
+    @staticmethod
+    def _systemd_scope_ok() -> bool:
+        if not shutil.which("systemd-run"):
+            return False
+        try:
+            return subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true"],
+                                  capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def _probe(self, method: str) -> str:
         with tempfile.TemporaryDirectory(prefix="jev-probe-") as d:
-            ws = Path(d) / "ws"
-            ws.mkdir()
-            argv = self._wrap(method, [sys.executable, "-I", "-S", "-c", PROBE, str(ws)], ws, network=False)
+            data = Path(d) / DATA_DIRNAME
+            ws = data / "workspaces" / "ws"
+            ws.mkdir(parents=True)
+            outside = Path(d) / "outside"
+            outside.mkdir()
+            argv, fds = self._wrap(method, [sys.executable, "-I", "-S", "-c", PROBE, str(ws), str(outside), str(data)],
+                                   ws, network=False, mounts=Mounts(), cwd=ws, limits=self.limits, hide_extra=[data])
             try:
-                r = subprocess.run(argv, capture_output=True, text=True, timeout=20, cwd=ws,
-                                   env=scrubbed_env(ws))
+                r = subprocess.run(argv, capture_output=True, text=True, timeout=20, cwd=ws, env=scrubbed_env(ws),
+                                   pass_fds=fds)
             except (OSError, subprocess.TimeoutExpired) as e:
                 return f"failed ({type(e).__name__})"
+            finally:
+                for fd in fds:
+                    os.close(fd)
             out = (r.stdout or "").strip().splitlines()
             if not (out and out[-1].startswith("JEVPROBE") and (ws / "probe.txt").exists()):
                 return f"failed (exit {r.returncode}: {(r.stderr or '').strip()[:160]})"
-            # the escape check looks from outside: did a write next to the workspace really land?
-            fs = "writable" if (Path(d) / "jev-escape-probe.txt").exists() else "blocked"
-            return f"{out[-1]} {fs}"
+            # the escape checks look from outside: did writes next to the workspace really land?
+            fs = "writable" if (outside / "jev-escape-probe.txt").exists() else "blocked"
+            prot = "exposed" if (data / "jev-escape-probe.txt").exists() else "protected"
+            return f"{out[-1]} {fs} {prot}"
+
+    # ------------------------------------------------------------------ what each run hides
+    def _protected(self, ws: Path, extra=()) -> list[Path]:
+        """jev-data (settings.json, jev.db, venvs, other workspaces) and the workspace root."""
+        out = [Path(p) for p in extra]
+        for p in (self.data_dir, self.workspace_root):
+            if p is not None:
+                out.append(p)
+        if ws.parent.parent.name == DATA_DIRNAME:          # the default layout, even without settings
+            out.append(ws.parent.parent)
+        res = []
+        for p in out:
+            p = Path(p).resolve()
+            if p == Path("/") or p == ws:
+                continue
+            if p.is_dir() and not p.is_symlink() and p not in res:
+                res.append(p)
+        return res
+
+    def _keep_paths(self, extra=()) -> list[Path]:
+        """Interpreter installs to re-expose read-only when they sit inside a hidden folder. A path
+        that is, or contains, your home folder is never re-exposed whole (L5)."""
+        home = _home()
+        keep = [Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix,
+                                            os.path.dirname(os.path.realpath(sys.executable)))]
+        node = shutil.which("node")
+        if node:
+            real = Path(node).resolve()
+            prefix = real.parent.parent
+            if home is not None and _under(home, prefix):
+                keep.append(real)          # the prefix is (or contains) your home: only the binary itself
+            else:
+                keep.append(prefix)
+        keep += [Path(p).resolve() for p in extra]
+        out = []
+        for p in keep:
+            if home is not None and _under(home, p) and p.is_dir():
+                continue
+            if p not in out:
+                out.append(p)
+        return out
 
     # ------------------------------------------------------------------ wrappers
-    def _wrap(self, method: str, argv: list[str], ws: Path, network: bool) -> list[str]:
+    def _wrap(self, method: str, argv: list[str], ws: Path, network: bool, mounts: Mounts | None = None,
+              cwd: Path | None = None, limits: Limits | None = None, hide_extra=()) -> tuple[list[str], list[int]]:
+        mounts = mounts or Mounts()
+        cwd = Path(cwd or ws)
+        lim = limits or self.limits
         if method == "bwrap":
-            a = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-                 "--unshare-cgroup-try", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"]
-            for dev in ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
-                        "/dev/dxg", "/dev/dri", "/dev/kfd", *[f"/dev/nvidia{i}" for i in range(8)]):
-                if os.path.exists(dev):
-                    a += ["--dev-bind", dev, dev]
-            for sock in ("/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock"):
-                if os.path.exists(sock) and not os.path.islink(sock):
-                    a += ["--ro-bind", "/dev/null", sock]
-            run_user = f"/run/user/{os.getuid()}"
-            if os.path.isdir(run_user):
-                a += ["--tmpfs", run_user]
-            if self.hide_home:
-                # your home folder and mounted drives (on WSL, /mnt/c is your Windows drive) become
-                # empty tmpfs; the Python / Node installs are re-exposed read-only, the workspace below
-                hidden = [Path(m) for m in ("/mnt", "/media", "/run/media") if os.path.isdir(m) and not os.path.islink(m)]
-                home = Path.home().resolve()
-                if home != Path("/") and home.is_dir() and not any(h == home or h in home.parents for h in hidden):
-                    hidden.append(home)
-                for h in hidden:
-                    a += ["--tmpfs", str(h)]
-                keep = {Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix,
-                                                    os.path.dirname(os.path.realpath(sys.executable)))}
-                node = shutil.which("node")
-                if node:
-                    keep.add(Path(node).resolve().parent.parent)
-                for p in sorted(keep):
-                    if p.is_dir() and any(p == h or h in p.parents for h in hidden):
-                        a += ["--ro-bind", str(p), str(p)]
-            a += ["--bind", str(ws), str(ws), "--chdir", str(ws)]
-            if not network:
-                a += ["--unshare-net"]
-            return a + ["--"] + argv
+            return self._wrap_bwrap(argv, ws, network, mounts, cwd, lim, hide_extra)
         if method == "unshare":
-            return argv if network else ["unshare", "--user", "--map-root-user", "--net", "--"] + argv
+            return self._wrap_unshare(argv, ws, network, mounts, cwd, hide_extra), []
         if method == "sandbox-exec":
-            rules = ["(version 1)", "(allow default)"]
-            if not network:
-                rules.append("(deny network*)")
-            rules += ["(deny file-write*)",
-                      "(allow file-write* (subpath " + _sbpl_quote(str(ws)) + ") (subpath \"/private/var/folders\")"
-                      " (subpath \"/private/tmp\") (literal \"/dev/null\") (literal \"/dev/stdout\")"
-                      " (literal \"/dev/stderr\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/tty\"))"]
-            return ["sandbox-exec", "-p", " ".join(rules)] + argv
-        return argv
+            hide = self._protected(ws, hide_extra)
+            exec_paths = self._keep_paths([*mounts.ro])
+            shell = Path(argv[0]).name.lower() in ("bash", "sh", "zsh", "dash", "pwsh")
+            prof = macos_profile(ws, network, read_only=[*self._keep_paths(), *mounts.ro],
+                                 writable=[*mounts.rw], hide=hide, exec_paths=exec_paths, shell=shell)
+            return ["sandbox-exec", "-p", prof] + argv, []
+        return argv, []
+
+    def _hidden_dirs(self, ws: Path, hide_extra=()) -> list[Path]:
+        hidden: list[Path] = []
+        for m in ("/run", "/var/run"):
+            if os.path.isdir(m) and not os.path.islink(m):
+                hidden.append(Path(m))
+        if os.path.isdir("/mnt/wsl") and not os.path.islink("/mnt/wsl"):
+            hidden.append(Path("/mnt/wsl"))
+        if self.hide_home:
+            # your home folder and mounted drives (on WSL, /mnt/c is your Windows drive)
+            for m in ("/mnt", "/media", "/run/media"):
+                if os.path.isdir(m) and not os.path.islink(m):
+                    hidden.append(Path(m))
+            home = _home()
+            if home is not None and home.is_dir():
+                hidden.append(home)
+        hidden += self._protected(ws, hide_extra)
+        out: list[Path] = []
+        for h in sorted(set(hidden), key=lambda p: (len(p.parts), str(p))):
+            if h == ws:
+                continue
+            if any(_under(h, o) for o in out):
+                continue                       # already hidden by a parent
+            out.append(h)
+        return out
+
+    def _wrap_bwrap(self, argv, ws, network, mounts, cwd, lim, hide_extra) -> tuple[list[str], list[int]]:
+        a = ["bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+             "--unshare-cgroup-try", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        sized = bwrap_supports_size(_bwrap_version())
+        tmp_bytes = max(64, int(lim.memory_mb)) << 20
+        ws_tmp = ws / ".tmp"
+        late_ro = [Path("/dev")]
+        # /tmp and /dev/shm: size-capped tmpfs (bwrap >= 0.10) or folders inside the workspace, which
+        # count toward max_workspace_mb; never an unbounded RAM-backed tmpfs
+        if sized:
+            a += ["--size", str(tmp_bytes), "--tmpfs", "/tmp", "--size", str(tmp_bytes), "--tmpfs", "/dev/shm"]
+        else:
+            shm = ws_tmp / ".shm"
+            shm.mkdir(parents=True, exist_ok=True)
+            if _under(ws, Path("/tmp")):
+                a += ["--tmpfs", "/tmp"]
+                late_ro.append(Path("/tmp"))
+            else:
+                a += ["--bind", str(ws_tmp), "/tmp"]
+            a += ["--bind", str(shm), "/dev/shm"]
+        hidden = self._hidden_dirs(ws, hide_extra)
+        for h in hidden:
+            a += ["--tmpfs", str(h)]
+        if any(h == Path("/run") for h in hidden):
+            for keep in RUN_KEEP:
+                if os.path.islink(keep):
+                    a += ["--symlink", os.readlink(keep), keep]
+                elif os.path.isdir(keep):
+                    a += ["--ro-bind", keep, keep]
+        w = self.wsl()
+        if w.get("detected") and os.path.exists("/init") and not os.path.isdir("/init"):
+            a += ["--ro-bind", "/dev/null", "/init"]   # WSL's interop launcher
+        for dev in ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
+                    "/dev/dxg", "/dev/dri", "/dev/kfd", *[f"/dev/nvidia{i}" for i in range(8)]):
+            if os.path.exists(dev):
+                a += ["--dev-bind", dev, dev]
+        for sock in ("/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock"):
+            if os.path.exists(sock) and not os.path.islink(sock) and \
+                    not any(_under(Path(sock), h) for h in hidden):
+                a += ["--ro-bind", "/dev/null", sock]
+        ro = list(self._keep_paths())
+        if network:
+            # a proxy CA bundle or resolv.conf living in a hidden folder must stay reachable
+            for k in NET_FILE_ENV:
+                v = os.environ.get(k)
+                if v and os.path.exists(v):
+                    ro.append(Path(v).resolve())
+            if os.path.exists("/etc/resolv.conf"):
+                ro.append(Path("/etc/resolv.conf").resolve())
+        ro += [Path(p).resolve() for p in mounts.ro]
+        for p in ro:
+            if p.exists() and any(_under(p, h) for h in hidden) and not any(_under(h, p) for h in hidden):
+                a += ["--ro-bind", str(p), str(p)]
+        for p in mounts.rw:
+            p = Path(p).resolve()
+            a += ["--bind", str(p), str(p)]
+        a += ["--bind" if mounts.workspace_writable else "--ro-bind", str(ws), str(ws)]
+        for h in hidden + late_ro:
+            a += ["--remount-ro", str(h)]
+        a += ["--chdir", str(cwd)]
+        if not network:
+            a += ["--unshare-net"]
+        fds: list[int] = []
+        prog = seccomp_program()
+        if prog:
+            r, wfd = os.pipe()
+            os.write(wfd, prog)
+            os.close(wfd)
+            fds.append(r)
+            a += ["--seccomp", str(r)]
+        return a + ["--"] + argv, fds
+
+    def _wrap_unshare(self, argv, ws, network, mounts, cwd, hide_extra) -> list[str]:
+        hide = [str(h) for h in self._protected(ws, hide_extra)]
+        for m in ("/run", "/var/run", "/mnt/wsl"):
+            if os.path.isdir(m) and not os.path.islink(m):
+                hide.append(m)
+        links = [[os.readlink(k), k] for k in RUN_KEEP if os.path.islink(k)]
+        ro = [str(Path(p).resolve()) for p in mounts.ro]
+        if network:
+            for k in NET_FILE_ENV:
+                v = os.environ.get(k)
+                if v and os.path.exists(v):
+                    ro.append(str(Path(v).resolve()))
+            if os.path.exists("/etc/resolv.conf"):
+                ro.append(str(Path("/etc/resolv.conf").resolve()))
+        spec = {"hide": sorted(set(hide), key=lambda p: (len(Path(p).parts), p)), "ro": ro,
+                "rw": [str(Path(p).resolve()) for p in mounts.rw], "ws": str(ws),
+                "ws_rw": bool(mounts.workspace_writable), "cwd": str(cwd), "symlinks": links,
+                "seccomp": (seccomp_program() or b"").hex()}
+        ns = ["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child", "--mount-proc"]
+        if not network:
+            ns.append("--net")
+        return ns + ["--", sys.executable, "-I", "-S", "-c", PRELUDE, json.dumps(spec)] + argv
+
+    # ------------------------------------------------------------------ workspace size
+    def workspace_over(self, ws: Path, limits: Limits | None = None) -> str | None:
+        lim = limits or self.limits
+        cap = int(lim.max_workspace_mb) << 20
+        used = workspace_usage(Path(ws))
+        if used > cap:
+            return (f"workspace size limit reached: the workspace uses {used / 2**20:.0f} MB, over limits."
+                    f"max_workspace_mb = {lim.max_workspace_mb} MB. Delete files (large outputs, .tmp, caches) "
+                    "before running more code")
+        return None
 
     # ------------------------------------------------------------------ run
+    def spawn(self, argv: list[str], workspace: Path, limits: Limits | None = None, network: bool = False, *,
+              extra_env: dict | None = None, cwd: Path | None = None, mounts: Mounts | None = None,
+              stdin: bool = False, honor_network_setting: bool = True, venv: Path | None = None,
+              check_workspace: bool = True, text: bool = False, tmp: Path | None = None) -> Spawned:
+        """Start argv inside the sandbox and return at once (for streaming callers such as FFmpeg
+        frame pipes). Raises SandboxError when the run cannot be started safely."""
+        if isinstance(argv, str):
+            raise TypeError("argv must be a list")
+        ws = Path(workspace).resolve()
+        ws.mkdir(parents=True, exist_ok=True)
+        lim = limits or self.limits
+        if check_workspace and (over := self.workspace_over(ws, lim)):
+            raise SandboxError(over)
+        run_cwd = Path(cwd).resolve() if cwd else ws
+        if not _under(run_cwd, ws):
+            raise SandboxError(f"cwd {run_cwd} is outside the workspace")
+        caps = self.capabilities()
+        if honor_network_setting:
+            network = network or self.network_allowed
+        method = caps["method"]
+        mounts = mounts or Mounts()
+        full = list(argv)
+        fds: list[int] = []
+        unit = None
+        if method in ("bwrap", "unshare", "sandbox-exec"):
+            full, fds = self._wrap(method, full, ws, network, mounts, run_cwd, lim)
+        elif IS_LINUX and caps.get("cgroup_scope"):
+            import secrets
+            unit = f"jev-run-{secrets.token_hex(6)}"
+            full = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
+                    "-p", f"MemoryMax={int(lim.memory_mb)}M", "-p", "TasksMax=512", "--"] + full
+        if not IS_WIN:
+            nproc = _user_process_count() + 256
+            kind = 0 if IS_LINUX else 1
+            spec = f"{lim.cpu_seconds},{lim.memory_mb << 20},{lim.max_output_mb << 20},{nproc},512,{kind}"
+            full = [sys.executable, "-I", "-S", "-c", LAUNCHER, spec] + full
+        env = scrubbed_env(ws, extra_env, network=network, venv=venv, tmp=tmp)
+        job = None
+        kw: dict = {}
+        if IS_WIN:
+            kw["creationflags"] = 0x00000200 | 0x08000000 | 0x00000004   # NEW_PROCESS_GROUP, NO_WINDOW, SUSPENDED
+            try:
+                job = self._win_job_create(64, lim.memory_mb, lim.cpu_seconds)
+            except Exception as e:  # noqa: BLE001
+                raise SandboxError(f"refused: the Windows Job Object that limits and kills runs could not be "
+                                   f"created ({e})") from e
+        else:
+            kw["start_new_session"] = True
+        try:
+            proc = subprocess.Popen(full, cwd=run_cwd if method != "bwrap" else ws, env=env,
+                                    stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, pass_fds=fds, text=text,
+                                    **({"encoding": "utf-8", "errors": "replace"} if text else {}), **kw)
+        except OSError as e:
+            if job:
+                job.close()
+            raise SandboxError(f"could not start {argv[0]}: {e}") from e
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        if job:
+            try:
+                job.adopt(proc)
+            except Exception as e:  # noqa: BLE001
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                job.close()
+                raise SandboxError(f"refused: the process could not be put into its Job Object ({e})") from e
+        return Spawned(proc, self, ws, lim, method, job, unit, check_workspace)
+
     def run(self, argv: list[str], workspace: Path, limits: Limits | None = None, network: bool = False,
             cancelled: Callable[[], bool] | None = None, extra_env: dict | None = None,
-            stdin_text: str | None = None) -> RunResult:
+            stdin_text: str | None = None, *, mounts: Mounts | None = None, cwd: Path | None = None,
+            venv: Path | None = None, honor_network_setting: bool = True, tmp: Path | None = None) -> RunResult:
         """Run argv (a list, never a shell string) inside `workspace` with limits and isolation."""
         if isinstance(argv, str):
             raise TypeError("argv must be a list")
         ws = Path(workspace).resolve()
         ws.mkdir(parents=True, exist_ok=True)
         lim = limits or self.limits
-        caps = self.capabilities()
-        network = network or self.network_allowed
-        method = caps["method"]
-        full = list(argv)
-        if method in ("bwrap", "unshare", "sandbox-exec"):
-            full = self._wrap(method, full, ws, network)
-        if not IS_WIN:
-            nproc = _user_process_count() + 256
-            kind = 0 if sys.platform.startswith("linux") else 1
-            spec = f"{lim.cpu_seconds},{lim.memory_mb << 20},{lim.max_output_mb << 20},{nproc},512,{kind}"
-            full = [sys.executable, "-I", "-S", "-c", LAUNCHER, spec] + full
+        method = self.capabilities()["method"]
         before = snapshot(ws)
-        env = scrubbed_env(ws, extra_env, network=network)
         t0 = time.monotonic()
-        job = None
-        kw: dict = {}
-        if IS_WIN:
-            kw["creationflags"] = 0x00000200 | 0x08000000      # CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-            try:
-                job = self._win_job_create(64, lim.memory_mb, lim.cpu_seconds)
-                kw["creationflags"] |= 0x00000004              # CREATE_SUSPENDED until it is in the job
-            except Exception:  # noqa: BLE001
-                job = None
-        else:
-            kw["start_new_session"] = True
         try:
-            proc = subprocess.Popen(full, cwd=ws, env=env, stdin=subprocess.PIPE if stdin_text is not None
-                                    else subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
-        except OSError as e:
-            if job:
-                job.close()
-            return RunResult(None, "", f"could not start {argv[0]}: {e}", 0.0, isolation=method)
-        if job:
-            job.adopt(proc)
+            sp = self.spawn(argv, ws, lim, network, extra_env=extra_env, cwd=cwd, mounts=mounts,
+                            stdin=stdin_text is not None, honor_network_setting=honor_network_setting, venv=venv,
+                            tmp=tmp)
+        except SandboxError as e:
+            return RunResult(None, "", str(e), 0.0, isolation=method, refused=str(e))
+        proc = sp.proc
         bufs = {"out": bytearray(), "err": bytearray()}
         dropped = {"out": 0, "err": 0}
 
@@ -429,14 +1134,13 @@ class Sandbox:
                     timed_out = True
                 else:
                     continue
-                self._kill_tree(proc, job)
+                sp.kill()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
                 break
-        if not (timed_out or was_cancelled):
-            self._kill_tree(proc, job)   # stray background children of a finished run
+        over = sp.finish()                # also kills stray background children of a finished run
         for t in threads:
             t.join(timeout=2)
         for s in (proc.stdout, proc.stderr):
@@ -444,8 +1148,6 @@ class Sandbox:
                 s.close()
             except OSError:
                 pass
-        if job:
-            job.close()
         seconds = time.monotonic() - t0
         rc = proc.returncode
         limit_hit = None
@@ -462,6 +1164,8 @@ class Sandbox:
             limit_hit = limit_hit or f"memory limit ({lim.memory_mb} MB) reached"
         if "File too large" in stderr:
             limit_hit = limit_hit or f"file size limit ({lim.max_output_mb} MB) reached"
+        if "No space left on device" in stderr:
+            limit_hit = limit_hit or "temporary space (/tmp, /dev/shm) is full"
         after = snapshot(ws)
         changed = sorted(k for k, v in after.items() if before.get(k) != v and not k.startswith("probe.txt"))
         out = bufs["out"].decode("utf-8", "replace")
@@ -470,15 +1174,21 @@ class Sandbox:
         if dropped["err"]:
             stderr += f"\n[... {dropped['err']} more bytes dropped ...]"
         return RunResult(rc, out, stderr, seconds, timed_out, was_cancelled, bool(dropped["out"] or dropped["err"]),
-                         limit_hit, changed, method)
+                         limit_hit, changed, method, workspace_over=over)
 
-    def _kill_tree(self, proc: subprocess.Popen, job) -> None:
+    def _kill_tree(self, proc: subprocess.Popen, job, unit: str | None = None) -> None:
         if job:
             job.terminate()
         if IS_WIN:
             if proc.poll() is None:
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
             return
+        if unit:
+            try:
+                subprocess.run(["systemctl", "--user", "kill", "--signal=SIGKILL", f"{unit}.scope"],
+                               capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         kids = []
         try:
             import psutil
@@ -501,9 +1211,29 @@ class Sandbox:
         return _WinJob(max_procs, memory_mb, cpu_seconds)
 
 
+_SANDBOXES: dict = {}
+_SANDBOXES_LOCK = threading.Lock()
+
+
+def sandbox_for(settings: dict | None) -> Sandbox:
+    """The Sandbox a tool context uses: settings["_sandbox"] when the runtime set one, else one
+    shared Sandbox per isolation mode (its probe runs once)."""
+    s = settings or {}
+    sb = s.get("_sandbox")
+    if sb is not None:
+        return sb
+    key = json.dumps([(s.get("sandbox") or {}).get("isolation", "auto"), (s.get("sandbox") or {}).get("hide_home", True),
+                      s.get("data_dir"), s.get("workspace_root"), bool(s.get("network_allowed"))])
+    with _SANDBOXES_LOCK:
+        if key not in _SANDBOXES:
+            _SANDBOXES[key] = Sandbox(s)
+        return _SANDBOXES[key]
+
+
 class _WinJob:
     """Windows Job Object: the child starts suspended, joins the job, then resumes. Closing the job
-    handle kills every process in it (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)."""
+    handle kills every process in it (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). If the process cannot be
+    assigned to the job it is terminated, never resumed."""
 
     def __init__(self, max_procs: int, memory_mb: int, cpu_seconds: int):
         import ctypes
@@ -512,6 +1242,7 @@ class _WinJob:
         self.ct = ctypes
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.k32 = k32
+        self.ntdll = ctypes.WinDLL("ntdll")
 
         class IoCounters(ctypes.Structure):
             _fields_ = [(n, ctypes.c_ulonglong) for n in ("r_ops", "w_ops", "o_ops", "r_bytes", "w_bytes", "o_bytes")]
@@ -545,11 +1276,18 @@ class _WinJob:
             raise OSError(err, "SetInformationJobObject failed")
 
     def adopt(self, proc: subprocess.Popen) -> None:
+        """Put the suspended process into the job, then resume it. If assigning fails the process is
+        terminated and OSError raised: it never runs outside the job."""
         handle = int(proc._handle)  # noqa: SLF001 - Popen exposes no public handle
-        try:
-            self.k32.AssignProcessToJobObject(self.ct.c_void_p(self.h), self.ct.c_void_p(handle))
-        finally:
-            self.ct.WinDLL("ntdll").NtResumeProcess(self.ct.c_void_p(handle))
+        ok = self.k32.AssignProcessToJobObject(self.ct.c_void_p(self.h), self.ct.c_void_p(handle))
+        if not ok:
+            err = self.ct.get_last_error() if hasattr(self.ct, "get_last_error") else 0
+            self.k32.TerminateProcess(self.ct.c_void_p(handle), 1)
+            raise OSError(err, "AssignProcessToJobObject failed")
+        status = self.ntdll.NtResumeProcess(self.ct.c_void_p(handle))
+        if status not in (0, None):
+            self.k32.TerminateProcess(self.ct.c_void_p(handle), 1)
+            raise OSError(status, "NtResumeProcess failed")
 
     def terminate(self) -> None:
         if self.h:

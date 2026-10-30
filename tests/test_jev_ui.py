@@ -73,6 +73,7 @@ class FakeJev:
         IMG["bytes"] = len(self.png)
         self.lock = threading.Lock()
         self.decisions: list[tuple[str, str, object]] = []
+        self.hashes: list = []
         self.pending: list[dict] = []
         self.history: list[dict] = [
             {"id": "old1", "created": time.time() - 3600, "tool": "run_python", "args": {"code": "print(1)"}, "reason": "",
@@ -114,7 +115,8 @@ class FakeJev:
             {"event": "tool_call", "call_id": "k2", "name": "run_shell", "args": {"command": "ls ~/Videos"},
              "risk": "approve", "decision": "ask"},
             {"event": "approval_request", "approval_id": "a1", "call_id": "k2", "name": "run_shell",
-             "args": {"command": "ls ~/Videos"}, "reason": "run_shell runs outside the sandbox with your permissions."},
+             "args": {"command": "ls ~/Videos"}, "args_sha256": "ab" * 32,
+             "reason": "run_shell runs outside the sandbox with your permissions."},
             # --- gated: nothing after this is released until a1 is decided
             {"event": "tool_result", "call_id": "k2", "ok": True, "content": "clip.mp4\n", "artifacts": [VID]},
             {"event": "token", "text": "Here is the black hole **and** a video of the orbit."},
@@ -135,7 +137,7 @@ class FakeJev:
                          "decisions": []}
         if path == "/api/jev/status":
             return 200, {"version": "0.4.0", "ollama": {"url": "http://127.0.0.1:11434", "reachable": True, "version": "0.12.6"},
-                         "default_model": "qwen2.5:7b", "models": ["qwen2.5:7b", "llama3.2:3b"], "tools": [],
+                         "models": ["qwen2.5:7b", "llama3.2:3b"], "tools": [],
                          "workspace_root": "/tmp/jev", "data_dir": "/home/me/JEV/jev-data",
                          "sandbox": {"network_isolation": "enforced", "method": "bwrap", "limits": {},
                                      "filesystem": "read-only outside the workspace", "rlimits": "cpu, data, fsize, nproc, nofile",
@@ -177,6 +179,7 @@ class FakeJev:
         if path.startswith("/api/jev/approvals/") and method == "POST":
             aid = path.rsplit("/", 1)[1]
             self.decisions.append((aid, body.get("decision"), body.get("remember")))
+            self.hashes.append(body.get("args_sha256"))
             if aid == "a1" and body.get("decision") == "approve":
                 self.approved = True
             self.pending = [p for p in self.pending if p["id"] != aid]
@@ -224,7 +227,7 @@ class FakeJev:
             bad = [k for k in body if k not in ("default_model", "limits", "network_allowed", "ollama_url")]
             if bad:
                 return 400, {"error": f"these settings can only be changed by editing settings.json: {bad}"}
-            if "ollama_url" in body and not urlparse(body["ollama_url"]).hostname in ("127.0.0.1", "localhost", "::1"):
+            if "ollama_url" in body and urlparse(body["ollama_url"]).hostname not in ("127.0.0.1", "localhost", "::1"):
                 return 400, {"error": "ollama_url is not on this machine"}
             for k, v in body.items():
                 self.settings[k] = {**self.settings[k], **v} if k == "limits" else v
@@ -465,6 +468,7 @@ def test_jev_scripted_turn_with_approval(browser):
     assert page.evaluate("() => document.activeElement.id") == "appr-deny"
     assert page.text_content("#appr-title") == "Allow JEV to run a command on your computer?"
     assert page.text_content("#appr-exact") == "ls ~/Videos"
+    assert page.text_content("#appr-hash") == "ab" * 32
     assert "outside the sandbox" in page.text_content("#appr-why")
     assert page.locator("#appr-risk .risk[data-risk=approve] .risk-word").inner_text() == "Asks first"
     assert page.text_content("#jev-waiting") == "1 waiting" and page.text_content("#jev-tab-count") == "1"
@@ -479,6 +483,7 @@ def test_jev_scripted_turn_with_approval(browser):
     page.keyboard.press("Enter")
     wait_until(page, lambda: fake.decisions, what="the decision POST")
     assert fake.decisions[0] == ("a1", "approve", None)
+    assert fake.hashes[0] == "ab" * 32            # approving echoes the SHA-256 of the exact arguments
     wait_until(page, lambda: not page.evaluate("() => document.getElementById('jev-approval').open"), what="dialog closed")
     assert not page.is_visible("#jev-waiting") and not page.is_visible("#jev-tab-count")
 

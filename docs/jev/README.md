@@ -36,7 +36,8 @@ runs entirely on your computer:
                      (your models, your disk)                 v
                                                   jev/tools/*  -- jev/sandbox.py (subprocess:
                                                   core, code,     scrubbed env, rlimits, bwrap /
-                                                  science, media  unshare / Job Object, timeouts)
+                                                  science, media  unshare / Job Object, timeouts;
+                                                                  FFmpeg runs in it too)
                                                        |
                                                        v
                          jev/store.py: jev-data/jev.db (conversations, messages, tool calls,
@@ -66,7 +67,7 @@ a small JSON protocol in the system prompt and parses the reply (plain JSON, fen
 | `make_plot` | sandbox | line/scatter/bar/histogram PNG from numbers (no code runs) |
 | `run_python`, `run_node` | sandbox | run code in the sandbox; asks first if the code uses the network, other programs, deletes, installs or absolute paths |
 | `run_shell` | approve | bash / PowerShell, always asks |
-| `install_package` | approve | `pip install` into the conversation's own `.venv`, always asks |
+| `install_package` | approve | `pip install` into the conversation's own venv (kept in `jev-data/venvs/`, outside the workspace; code runs see it read-only), always asks and shows the exact command |
 | `jepa_embed_images` | sandbox | embed workspace images with a trained JEPA Studio run (hash-verified weights) |
 | `jepa_train` | approve | start a LeJEPA pretraining run (shows up in the Train tab) |
 | science and media tools | varies | black-hole renders, simulations, narrated explainers, footage edits (`jev/tools/science.py`, `jev/tools/media.py`) |

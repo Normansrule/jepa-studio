@@ -49,8 +49,9 @@ export class JevClient {
     const q = [status ? `status=${enc(status)}` : '', limit ? `limit=${Number(limit) || 500}` : ''].filter(Boolean).join('&');
     return this.b.req('GET', `/api/jev/approvals${q ? `?${q}` : ''}`);
   }
-  decide(id, decision, remember = null) {
-    return this.b.req('POST', `/api/jev/approvals/${enc(id)}`, { decision, remember: remember || null });
+  /** Approve or deny. Approving must echo the SHA-256 of the exact arguments the card showed. */
+  decide(id, decision, remember = null, argsSha256 = null) {
+    return this.b.req('POST', `/api/jev/approvals/${enc(id)}`, { decision, remember: remember || null, args_sha256: argsSha256 || null });
   }
 
   artifacts(conversationId) { return this.b.req('GET', `/api/jev/artifacts?conversation_id=${enc(conversationId)}`); }

@@ -104,8 +104,19 @@ def cmd_doctor(args) -> int:
         print(f"  models      none yet: jev models pull {s['default_model']}")
         ok = False
     caps = Sandbox(s).capabilities()
-    print(f"  sandbox     method {caps['method']}; network isolation {caps['network_isolation']}")
+    print(f"  sandbox     method {caps['method']}; network isolation {caps['network_isolation']}; "
+          f"isolation {caps['isolation']}")
     print(f"              files: {caps['filesystem']}")
+    if caps.get("weak"):
+        print("              WEAK SANDBOX: " + "; ".join(caps["weak_reasons"]) + ".\n"
+              "              Every code / FFmpeg run will ask you first (the locked weak_sandbox row). "
+              "See docs/jev/SAFETY.md.")
+    w = caps.get("wsl") or {}
+    if w.get("detected"):
+        print(f"  wsl         detected; Windows interop {'ON' if w.get('interop_enabled') else 'off'}; Windows PATH "
+              f"{'appended' if w.get('windows_path_in_PATH') else 'not appended'}")
+    for note in caps.get("isolation_notes") or []:
+        print(f"              WEAKER ISOLATION: {note}")
     print(f"              limits: {caps['rlimits']}; {json.dumps(caps['limits'])}")
     if caps.get("probe"):
         print(f"              probe: {caps['probe']}")
@@ -209,9 +220,9 @@ def run_chat_turn(rt, message: str, conversation_id: str | None, model: str | No
                                                                              "run" else "") + "\n")
                 elif ev == "approval_request":
                     out.write(f"\n  APPROVAL NEEDED for {e['name']}: {e['reason']}\n")
-                    shown = json.dumps(e["args"], indent=2)
-                    shown = shown if len(shown) < 3000 else shown[:3000] + "\n..."
+                    shown = json.dumps(e["args"], indent=2)     # the whole arguments: nothing is hidden
                     out.write("    " + shown.replace("\n", "\n    ") + "\n")
+                    out.write(f"    sha256 of the exact arguments: {e.get('args_sha256')}\n")
                     out.flush()
                     if assume:
                         ans = assume
@@ -221,7 +232,8 @@ def run_chat_turn(rt, message: str, conversation_id: str | None, model: str | No
                         except EOFError:
                             ans = "n"
                     rt.broker.decide(e["approval_id"], "approve" if ans in ("y", "yes", "s") else "deny",
-                                     "session" if ans == "s" else None, by="terminal")
+                                     "session" if ans == "s" else None, by="terminal",
+                                     args_sha256=e.get("args_sha256"))
                 elif ev == "tool_result":
                     first = (e["content"] or "").strip().splitlines()[:6]
                     out.write("  " + ("ok" if e["ok"] else "failed") + ": " + "\n    ".join(first) + "\n")

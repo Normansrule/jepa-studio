@@ -41,6 +41,8 @@ progress with `ctx.progress(fraction, message)`.
 from __future__ import annotations
 
 import mimetypes
+import os
+import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -122,6 +124,10 @@ class ToolSpec:
     # would take > 10 minutes, or a GPU job). Returns a reason string to ask, or None.
     needs_approval: Callable[[dict, ToolContext], str | None] | None = None
     category: str = "general"       # answer | code | image | video | science | files | models
+    # True for tools that start programs through the sandbox (model code, a shell, pip, FFmpeg).
+    # On a weak sandbox (no file-system or network isolation) the locked `weak_sandbox` row makes
+    # every call of such a tool ask first.
+    runs_code: bool = False
 
     def schema(self) -> dict:
         """Function-calling schema in the format Ollama's /api/chat `tools` field expects."""
@@ -134,7 +140,7 @@ REGISTRY: dict[str, ToolSpec] = {}
 
 
 def tool(name: str, description: str, parameters: dict, risk: Risk, category: str = "general",
-         needs_approval: Callable[[dict, ToolContext], str | None] | None = None):
+         needs_approval: Callable[[dict, ToolContext], str | None] | None = None, runs_code: bool = False):
     """Decorator that registers a tool. Names are unique; re-registering replaces (for tests)."""
     if risk not in RISKS:
         raise ValueError(f"risk must be one of {RISKS}")
@@ -142,9 +148,61 @@ def tool(name: str, description: str, parameters: dict, risk: Risk, category: st
         raise ValueError("tool parameters must be a JSON Schema object")
 
     def wrap(fn: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
-        REGISTRY[name] = ToolSpec(name, description, parameters, risk, fn, needs_approval, category)
+        REGISTRY[name] = ToolSpec(name, description, parameters, risk, fn, needs_approval, category, runs_code)
         return fn
     return wrap
+
+
+# ------------------------------------------------------------------------------------------ safe file I/O
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_BINARY = getattr(os, "O_BINARY", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+
+class NotRegularFile(ToolError):
+    """A workspace path is a FIFO, socket, device, folder or symlink where a regular file was expected."""
+
+
+def _regular_fd(path, flags: int, mode: int = 0o600) -> int:
+    try:
+        fd = os.open(path, flags | _NOFOLLOW | _NONBLOCK | _BINARY | _CLOEXEC, mode)
+    except OSError as e:
+        import errno
+        if e.errno in (errno.ELOOP, errno.ENXIO, errno.EISDIR, errno.EWOULDBLOCK, errno.EMLINK):
+            raise NotRegularFile(f"{Path(path).name} is not a regular file (a link, FIFO, socket, device or folder); "
+                                 "JEV only reads and writes regular files") from e
+        raise
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise NotRegularFile(f"{Path(path).name} is not a regular file (FIFO, socket, device or folder); "
+                             "JEV only reads and writes regular files")
+    if _NONBLOCK:
+        try:
+            import fcntl
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~_NONBLOCK)
+        except (ImportError, OSError):
+            pass
+    return fd
+
+
+def open_regular(path, mode: str = "rb", encoding: str | None = None, newline: str | None = None):
+    """open() for workspace files that refuses FIFOs, sockets, devices and a final symlink, without
+    ever blocking (O_NONBLOCK|O_NOFOLLOW, then fstat S_ISREG). Modes: r, rb, w, wb, a, ab."""
+    m = mode.replace("b", "").replace("t", "")
+    flags = {"r": os.O_RDONLY, "w": os.O_WRONLY | os.O_CREAT, "a": os.O_WRONLY | os.O_CREAT | os.O_APPEND}[m]
+    fd = _regular_fd(path, flags)
+    if m == "w":
+        os.ftruncate(fd, 0)        # truncate only after checking it is a regular file
+    if "b" in mode:
+        return os.fdopen(fd, mode)
+    return os.fdopen(fd, mode, encoding=encoding or "utf-8", newline=newline)
+
+
+def check_regular(path) -> None:
+    """Raise NotRegularFile unless `path` is a regular file (checked without following a final link)."""
+    os.close(_regular_fd(path, os.O_RDONLY))
 
 
 def load_all() -> dict[str, ToolSpec]:

@@ -76,8 +76,9 @@ def _opener() -> urllib.request.OpenerDirector:
 
 
 def sha256_file(path: str | Path, chunk: int = 1 << 20) -> str:
+    from .tools.base import open_regular
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open_regular(path, "rb") as f:          # never blocks on a FIFO a sandboxed program left behind
         while b := f.read(chunk):
             h.update(b)
     return h.hexdigest()
@@ -168,6 +169,25 @@ class Ollama:
 
     def show(self, name: str) -> dict:
         return self._json("POST", "/api/show", {"model": name})
+
+    def is_remote(self, name: str) -> bool:
+        """True when Ollama says this model runs elsewhere (a cloud model, possibly copied under a local-
+        looking name): /api/show's remote_host / remote_model, or the /api/tags entry. Unknown models
+        are not remote (chat will fail on them anyway)."""
+        if is_cloud_model(name):
+            return True
+        try:
+            if is_cloud_model(name, self.show(name)):
+                return True
+        except OllamaError:
+            pass
+        try:
+            for m in self._json("GET", "/api/tags").get("models", []):
+                if (m.get("name") or m.get("model")) == name and is_cloud_model(name, m):
+                    return True
+        except OllamaError:
+            pass
+        return False
 
     def supports_tools(self, name: str) -> bool:
         if name not in self._caps:
@@ -276,6 +296,9 @@ class MockLLM:
 
     def supports_tools(self, name: str) -> bool:
         return self.tools
+
+    def is_remote(self, name: str) -> bool:
+        return is_cloud_model(name)
 
     def mark_no_tools(self, name: str) -> None:
         self.tools = False

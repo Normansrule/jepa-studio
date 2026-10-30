@@ -172,7 +172,9 @@ class JevApi:
                 return self.add_file(cid, body)
         if p[:1] == ["approvals"] and len(p) == 2 and method == "POST":
             try:
-                return rt.broker.decide(p[1], body.get("decision"), body.get("remember"))
+                # approving needs the SHA-256 the card showed: a stale or forged answer approves nothing
+                return rt.broker.decide(p[1], body.get("decision"), body.get("remember"),
+                                        args_sha256=body.get("args_sha256"), require_hash=True)
             except KeyError as e:
                 raise HttpError(404, "unknown approval") from e
         if p[:1] == ["artifacts"] and len(p) == 2 and method == "GET":
@@ -206,8 +208,18 @@ class JevApi:
                 "workspaces": s["workspace_root"], "exports": str(d / "exports")}
 
     def update_settings(self, body: dict) -> dict:
+        """Change the API-writable settings; every change is an audit-log row with the values before and after."""
+        import secrets as _secrets
+
+        before = self.rt.settings.public()
         out = self.rt.settings.update(body, api=True)
         self.rt.refresh()
+        changed = {k: {"before": before.get(k), "after": out.get(k)} for k in body if before.get(k) != out.get(k)}
+        self.rt.store.add_approval({"id": "a-" + _secrets.token_hex(6), "kind": "settings", "tool": "settings_update",
+                                    "args": {"patch": body, "changed": changed}, "risk": "approve",
+                                    "reason": "settings changed through the API: " +
+                                              (", ".join(sorted(changed)) or "no effective change"),
+                                    "rules": [], "status": "applied", "decided_by": "user", "decided": time.time()})
         return out
 
     # ------------------------------------------------------------------ approvals for direct actions
@@ -230,10 +242,12 @@ class JevApi:
 
     def _approval_json(self, row: dict) -> dict:
         live = self.rt.broker.get(row["id"])
-        return {k: row.get(k) for k in ("id", "created", "kind", "tool", "args", "reason", "risk", "rules",
-                                        "conversation_id", "turn_id", "call_id", "status", "decided_by", "decided",
-                                        "remember")} | \
-            {"job_id": (live.job_id if live else None) or row.get("job_id")}
+        out = {k: row.get(k) for k in ("id", "created", "kind", "tool", "args", "args_sha256", "reason", "risk",
+                                       "rules", "conversation_id", "turn_id", "call_id", "status", "decided_by",
+                                       "decided", "remember")}
+        if live is not None:              # the exact, uncut arguments of a call that is still pending
+            out["args"], out["args_sha256"] = live.args, live.args_sha256
+        return out | {"job_id": (live.job_id if live else None) or row.get("job_id")}
 
     def model_pull(self, body: dict) -> dict:
         name = _model_name(body.get("name"))
@@ -382,29 +396,36 @@ class JevApi:
         if not isinstance(name, str) or not name or (why := check_path(name, ws)):
             raise HttpError(400, f"name must be a relative path inside the workspace ({name!r}"
                                  f"{': ' + why if isinstance(name, str) and name else ''})")
+        from .tools.base import NotRegularFile, open_regular
+
         dest = (ws / name.replace("\\", "/")).resolve()
         if dest.relative_to(ws).parts[0] in (".jev", ".venv"):
             raise HttpError(400, "that folder is reserved")
         dest.parent.mkdir(parents=True, exist_ok=True)
         b64 = body.get("content_base64", body.get("data_base64"))
-        if b64 is not None:
-            try:
-                data = base64.b64decode(b64, validate=True)
-            except (ValueError, TypeError) as e:
-                raise HttpError(400, "content_base64 is not valid base64") from e
-            dest.write_bytes(data)
-        elif "from_path" in body:
-            src = Path(str(body["from_path"])).expanduser().resolve()
-            allowed = self.studio.allowed if self.studio is not None else []
-            if not any(src == a or a in src.parents for a in allowed):
-                raise HttpError(403, "from_path is outside the folders you granted to JEPA Studio")
-            if not src.is_file():
-                raise HttpError(404, "from_path is not a file")
-            if src.stat().st_size > rt.settings.resolved()["limits"]["max_file_mb"] << 20:
-                raise HttpError(413, "file larger than limits.max_file_mb")
-            shutil.copyfile(src, dest)
-        else:
-            raise HttpError(400, "send content_base64 (or data_base64) or from_path")
+        try:
+            if b64 is not None:
+                try:
+                    data = base64.b64decode(b64, validate=True)
+                except (ValueError, TypeError) as e:
+                    raise HttpError(400, "content_base64 is not valid base64") from e
+                with open_regular(dest, "wb") as fh:     # never blocks on a FIFO planted in the workspace
+                    fh.write(data)
+            elif "from_path" in body:
+                src = Path(str(body["from_path"])).expanduser().resolve()
+                allowed = self.studio.allowed if self.studio is not None else []
+                if not any(src == a or a in src.parents for a in allowed):
+                    raise HttpError(403, "from_path is outside the folders you granted to JEPA Studio")
+                if not src.is_file():
+                    raise HttpError(404, "from_path is not a file")
+                if src.stat().st_size > rt.settings.resolved()["limits"]["max_file_mb"] << 20:
+                    raise HttpError(413, "file larger than limits.max_file_mb")
+                with open_regular(src, "rb") as fi, open_regular(dest, "wb") as fo:
+                    shutil.copyfileobj(fi, fo, 1 << 20)
+            else:
+                raise HttpError(400, "send content_base64 (or data_base64) or from_path")
+        except NotRegularFile as e:
+            raise HttpError(400, str(e)) from e
         from .tools.core import artifact_kind
         k = artifact_kind(dest)
         row = rt.store.add_artifact(ws, dest, k if k != "other" else "data",

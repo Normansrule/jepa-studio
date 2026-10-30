@@ -811,14 +811,14 @@
     <div><dt>Why it asks</dt><dd id="appr-why"></dd></div>
     <div><dt>Tool</dt><dd class="appr-tool-row"><code id="appr-tool"></code><span id="appr-risk"></span></dd></div>
   </dl>
-  <details class="appr-more"><summary>All arguments</summary><pre id="appr-args" tabindex="0"></pre></details>
+  <details class="appr-more"><summary>All arguments</summary><pre id="appr-args" tabindex="0"></pre><p class="hint appr-hash-row">SHA-256 of these exact arguments: <code id="appr-hash"></code></p></details>
   <p class="field-error" id="appr-error" role="alert" hidden></p>
   <div class="btn-row appr-actions">
     <button class="btn" id="appr-deny" type="button">Deny</button>
     <button class="btn" id="appr-session" type="button">Approve for this session</button>
     <button class="btn primary" id="appr-once" type="button">Approve once</button>
   </div>
-  <p class="hint appr-foot">Esc denies. “For this session” allows this tool with the same kind of arguments until JEV Studio closes; nothing is remembered after that.</p>
+  <p class="hint appr-foot">Esc denies. “For this session” allows this tool again only with exactly these arguments, in this conversation, until JEV Studio closes. Shell commands, installs, network use, deletes, models and paths outside the workspace are asked every time.</p>
 </dialog>
 
 <dialog class="lightbox" id="jev-lightbox" aria-labelledby="lb-title">

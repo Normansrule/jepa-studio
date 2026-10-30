@@ -47,7 +47,7 @@ Routes the UI uses (all in [api.md](api.md)):
 | Chat | `POST /chat`, then `GET /turns/<id>/events?since=n` every 200 ms (900 ms while an approval is pending) until `done`, `error` or `cancelled`; `POST /turns/<id>/cancel` for Stop |
 | Conversations | `GET /conversations`, `GET /conversations/<id>`, `POST /conversations` (an empty one, before the first upload), `DELETE /conversations/<id>` (answered with an approval), `GET /conversations/<id>/export` |
 | Attachments | `POST /conversations/<id>/files` with `{name, mime, data_base64}`; files over 1.5 MB are refused in the page, because the base64 body must stay under the 2 MB cap. The returned `path` goes into `attachments` of the next `POST /chat` |
-| Approvals | `GET /approvals?status=pending` every 3 s while visible, `GET /approvals?limit=5000` for the history (audit log), `POST /approvals/<id>` with `{decision, remember}` |
+| Approvals | `GET /approvals?status=pending` every 3 s while visible, `GET /approvals?limit=5000` for the history (audit log), `POST /approvals/<id>` with `{decision, remember, args_sha256}` (the hash of the exact arguments the card showed; required to approve) |
 | Models | `GET /models` (installed + imported SHA-256s), `POST /settings {default_model}`, `POST /models/pull`, `POST /models/import {gguf_path, name}` (the path comes from the shell's `pick_gguf_file`), `DELETE /models/<name>`; the last three answer with an approval, and after "Approve" the `job_id` in the decision's response is followed with `GET /jobs/<id>/events` |
 | Settings | `GET /settings` (settings, `rules`, `paths`), `POST /settings` with only the changed keys, `GET /export` (a zip, saved with a normal download), `POST /data/delete {keep_audit_log}` (answered with an approval); sandbox facts come from `GET /status` |
 | Files | `GET /artifacts/<id>` with the token header, shown through a `blob:` URL |
@@ -100,9 +100,14 @@ appears and the JEV tab shows the count. The dialog shows:
   model?", "… to delete something?", "… to use the internet?", …) and one sentence on what will
   happen;
 * the exact command, path, address or model in a monospace block, so you approve what will
-  actually run; all arguments are one click away;
+  actually run; all arguments, never cut, are one click away ("All arguments", scrollable), with
+  the SHA-256 of those exact arguments. Approving sends that hash back
+  (`POST /approvals/<id> {decision, remember, args_sha256}`) and the backend refuses an approval
+  whose hash does not match the pending call;
 * why it asks (the backend's `reason`) and the tool with its risk badge;
-* **Deny**, **Approve for this session**, **Approve once**. Focus starts on Deny. **Esc** is Deny
+* **Deny**, **Approve for this session**, **Approve once**. "For this session" covers only these
+  exact arguments of this tool in this conversation; shell commands, installs, network use,
+  deletes, models and paths outside the workspace are asked every time. Focus starts on Deny. **Esc** is Deny
   (the dialog's `cancel` event). Tab moves between the buttons; focus returns to where it was when
   the dialog closes. With several requests waiting, it says "1 of 3 requests" and shows the next
   after each answer.

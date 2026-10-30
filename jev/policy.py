@@ -10,13 +10,20 @@
 
  Without editing code you can override any unlocked row in jev-data/settings.json:
      "approval_rules": {"shell": "deny", "network": "run", "tool:run_python": "ask"}
- A "tool:<name>" entry overrides the final decision for that tool (except the locked rows).
+ A "tool:<name>" entry overrides the final decision for that tool, but never below what a locked
+ row asks for. Locked rows can be made stricter in settings ("weak_sandbox": "deny"), never looser.
  The HTTP API cannot change approval_rules, and no tool can, so neither a web page nor the
  model can loosen them.
+
+ The REMEMBER column says which rows "Approve for this session" may remember. A remembered
+ approval covers only the exact same arguments (a SHA-256 of them) of the same tool in the same
+ conversation, until the backend restarts. A call that hits any row with REMEMBER = False is
+ asked every time.
 """
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import secrets
@@ -26,35 +33,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-RULES: dict[str, tuple[str, str]] = {
-    # rule key             action   what it covers
-    "read":               ("run",  "tools with no side effects: answering, math, listing/reading workspace files"),
-    "sandbox":            ("run",  "writing and running code inside this conversation's workspace, within limits"),
-    "approve_tool":       ("ask",  "tools declared risk='approve' (shell, installs, training runs, ...)"),
+RULES: dict[str, tuple[str, bool, str]] = {
+    # rule key             action  REMEMBER  what it covers
+    #                              (may "Approve for this session" skip asking again for the SAME
+    #                               arguments in the SAME conversation? False = asked every time)
+    "read":               ("run",  True,  "tools with no side effects: answering, math, listing/reading workspace files"),
+    "sandbox":            ("run",  True,  "writing and running code inside this conversation's workspace, within limits"),
+    "approve_tool":       ("ask",  True,  "tools declared risk='approve' (shell, installs, training runs, ...)"),
     # ---- the "important stuff": always asks, even though sandboxed work auto-runs ----------------
-    "network":            ("ask",  "network access from code or a tool (unless settings.network_allowed is on)"),
-    "outside_workspace":  ("ask",  "code that reads or writes files outside the workspace (absolute paths, ~, ..)"),
-    "delete":             ("ask",  "deleting anything: files, folders, conversations"),
-    "install":            ("ask",  "installing packages (pip, npm, apt, conda, brew, winget, ...)"),
-    "model_download":     ("ask",  "downloading a model (ollama pull)"),
-    "model_import":       ("ask",  "importing a GGUF model file into Ollama"),
-    "model_delete":       ("ask",  "deleting a model from Ollama"),
-    "gpu_long":           ("ask",  "GPU jobs estimated over 10 minutes or over 80% of VRAM"),
-    "big_file":           ("ask",  "files larger than limits.max_file_mb"),
-    "shell":              ("ask",  "running shell commands (bash, sh, PowerShell, cmd, subprocess, os.system)"),
-    "send_data":          ("ask",  "anything that sends data off this machine (uploads, URLs, email, publishing)"),
-    "dynamic_code":       ("ask",  "exec/eval/__import__ tricks, only when the OS gives no network isolation"),
-    "tool_specific":      ("ask",  "a tool's own reason to ask (its needs_approval hook returned a reason)"),
-    # ---- locked: refused whatever settings say ------------------------------------------------------
-    "path_escape":        ("deny", "workspace-path arguments escaping via '..', symlinks, absolute, ~ or drive paths"),
-    "self_approval":      ("deny", "code or arguments touching JEV's approvals API, session token, settings or audit DB"),
-    "absurd_limits":      ("deny", "arguments asking for more time or memory than the configured limits"),
+    "network":            ("ask",  False, "network access from code or a tool (unless settings.network_allowed is on)"),
+    "outside_workspace":  ("ask",  False, "code that reads or writes files outside the workspace (absolute paths, ~, ..)"),
+    "delete":             ("ask",  False, "deleting anything: files, folders, conversations"),
+    "install":            ("ask",  False, "installing packages (pip, npm, apt, conda, brew, winget, ...)"),
+    "model_download":     ("ask",  False, "downloading a model (ollama pull)"),
+    "model_import":       ("ask",  False, "importing a GGUF model file into Ollama"),
+    "model_delete":       ("ask",  False, "deleting a model from Ollama"),
+    "gpu_long":           ("ask",  True,  "GPU jobs estimated over 10 minutes or over 80% of VRAM"),
+    "big_file":           ("ask",  True,  "files larger than limits.max_file_mb"),
+    "shell":              ("ask",  False, "running shell commands (bash, sh, PowerShell, cmd, subprocess, os.system)"),
+    "send_data":          ("ask",  False, "anything that sends data off this machine (uploads, URLs, email, publishing)"),
+    "dynamic_code":       ("ask",  True,  "exec/eval/__import__ tricks, only when the OS gives no network isolation"),
+    "tool_specific":      ("ask",  True,  "a tool's own reason to ask (its needs_approval hook returned a reason)"),
+    # ---- locked: settings can make these stricter, never looser -------------------------------------
+    "weak_sandbox":       ("ask",  True,  "any tool that runs code or FFmpeg when the sandbox has no file-system or no "
+                                          "network isolation (Windows, macOS until verified, Linux without bubblewrap)"),
+    "path_escape":        ("deny", False, "workspace-path arguments escaping via '..', symlinks, absolute, ~ or drive paths"),
+    "self_approval":      ("deny", False, "code or arguments touching JEV's approvals API, session token, settings or audit DB"),
+    "absurd_limits":      ("deny", False, "arguments asking for more time or memory than the configured limits"),
 }
-LOCKED = {"path_escape", "self_approval", "absurd_limits"}
+LOCKED = {"weak_sandbox", "path_escape", "self_approval", "absurd_limits"}
 GPU_MAX_MINUTES = 10           # gpu_long: estimated minutes above this ask
 GPU_MAX_VRAM_FRAC = 0.80       # gpu_long: estimated fraction of VRAM above this asks
 # never remembered for the session, even if you tick "remember": each one is asked every time
-NEVER_REMEMBER = {"delete", "model_download", "model_import", "model_delete", "send_data"}
+NEVER_REMEMBER = {k for k, (_, remember, _) in RULES.items() if not remember}
 # ====================================================================================================
 
 SEVERITY = {"run": 0, "ask": 1, "deny": 2}
@@ -143,9 +154,12 @@ def _strings(obj, depth=0):
 
 
 # ------------------------------------------------------------------------------------------ code scanners
-NET_MODULES = {"socket", "requests", "urllib", "urllib2", "urllib3", "http", "httpx", "aiohttp", "ftplib", "smtplib",
-               "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "ssl", "xmlrpc",
-               "pycurl", "grpc", "boto3", "botocore", "socketserver", "asyncssh", "webbrowser"}
+# Advisory only: the sandbox (no network namespace = no network) is the enforcement. These decide when
+# code that visibly uses the network asks first.
+NET_MODULES = {"socket", "_socket", "requests", "urllib", "urllib2", "urllib3", "http", "httplib2", "httpx", "aiohttp",
+               "ftplib", "smtplib", "poplib", "imaplib", "telnetlib", "paramiko", "websocket", "websockets", "ssl",
+               "xmlrpc", "pycurl", "grpc", "boto3", "botocore", "socketserver", "asyncssh", "webbrowser", "asyncio",
+               "selectors", "uvloop", "trio", "anyio", "zmq", "dns", "scapy", "mechanize", "nntplib", "smtpd"}
 SHELL_MODULES = {"subprocess", "pty", "pexpect", "sh", "plumbum"}
 SHELL_CALLS = {"system", "popen", "spawnl", "spawnlp", "spawnv", "spawnvp", "execv", "execvp", "execl", "execlp",
                "startfile", "fork", "forkpty"}
@@ -246,6 +260,22 @@ def scan_shell(command: str) -> list[tuple[str, str]]:
 
 
 # ------------------------------------------------------------------------------------------ policy
+def args_hash(args) -> str:
+    """SHA-256 of the canonical JSON of a call's arguments (sorted keys, no whitespace, UTF-8). The
+    approval card shows it, the decision must echo it, and "remember" keys on it."""
+    blob = json.dumps(args if args is not None else {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _sandbox_caps(ctx) -> dict:
+    from .sandbox import sandbox_for
+    try:
+        return sandbox_for(getattr(ctx, "settings", None) or {}).capabilities()
+    except Exception:  # noqa: BLE001 - unknown isolation counts as weak
+        return {"weak": True, "weak_reasons": ["the sandbox could not be probed"]}
+
+
 class Policy:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or {}
@@ -254,21 +284,25 @@ class Policy:
 
     def action_for(self, rule: str) -> str:
         base = RULES.get(rule, RULES["tool_specific"])[0]
+        override = (self.settings.get("approval_rules") or {}).get(rule)
         if rule in LOCKED:
-            return base
+            # settings may tighten a locked row, never loosen it
+            return override if override in SEVERITY and SEVERITY[override] > SEVERITY[base] else base
         if rule == "network" and self.settings.get("network_allowed"):
             base = "run"
-        return (self.settings.get("approval_rules") or {}).get(rule, base)
+        return override if override in SEVERITY else base
 
     @staticmethod
-    def shape(tool: str, args: dict, rules: list[str]) -> tuple:
-        return (tool, tuple(sorted((args or {}).keys())), tuple(sorted(set(rules))))
+    def key(conversation_id: str | None, tool: str, args: dict, rules: list[str]) -> tuple:
+        return (conversation_id, tool, args_hash(args), tuple(sorted(set(rules))))
 
-    def remember(self, tool: str, args: dict, rules: list[str]) -> bool:
-        if set(rules) & NEVER_REMEMBER:
+    def remember(self, tool: str, args: dict, rules: list[str], conversation_id: str | None = None) -> bool:
+        """Remember an approval for exactly these arguments in this conversation. False (nothing
+        remembered) without a conversation or when any row is not rememberable."""
+        if not conversation_id or set(rules) & NEVER_REMEMBER or any(r not in RULES for r in rules):
             return False
         with self.lock:
-            self.remembered.add(self.shape(tool, args, rules))
+            self.remembered.add(self.key(conversation_id, tool, args, rules))
         return True
 
     def decide(self, spec, args: dict, ctx) -> Decision:
@@ -296,6 +330,12 @@ class Policy:
         risk_rule = {"read": "read", "sandbox": "sandbox", "approve": "approve_tool"}[spec.risk]
         hits.append((risk_rule, {"read": "read-only tool", "sandbox": "runs inside the workspace sandbox",
                                  "approve_tool": f"{spec.name} always asks first"}[risk_rule]))
+        if getattr(spec, "runs_code", False):
+            caps = _sandbox_caps(ctx)
+            if caps.get("weak", True):
+                hits.append(("weak_sandbox", "this computer's sandbox is weak (" +
+                             "; ".join(caps.get("weak_reasons") or ["unknown"]) + "), so every code or FFmpeg run "
+                             "asks first"))
         if spec.needs_approval and not any(r == "path_escape" for r, _ in hits):
             try:
                 extra = spec.needs_approval(args, ctx)
@@ -314,17 +354,24 @@ class Policy:
                 worst, reasons = a, [text]
             elif a == worst and SEVERITY[a] > 0:
                 reasons.append(text)
-        locked_deny = any(r in LOCKED for r in rules)
+        # the floor no setting can go below: what the locked rows ask for
+        floor = max([self.action_for(r) for r in rules if r in LOCKED] or ["run"], key=SEVERITY.get)
         by = "policy"
         override = (self.settings.get("approval_rules") or {}).get(f"tool:{spec.name}")
-        if override in SEVERITY and not locked_deny:
+        if override in SEVERITY and SEVERITY[override] >= SEVERITY[floor]:
             worst, by = override, "settings"
             reasons = reasons or [f"approval_rules sets {spec.name} to {override}"]
+        elif override in SEVERITY:
+            worst = floor
+            reasons = [t for r, t in hits if r in LOCKED and self.action_for(r) == floor] or reasons
         if worst == "ask":
             ask_rules = [r for r in rules if self.action_for(r) == "ask"]
-            with self.lock:
-                if self.shape(spec.name, args, ask_rules) in self.remembered:
-                    return Decision("run", "approved earlier this session (remember)", rules, "session")
+            cid = (getattr(ctx, "settings", None) or {}).get("_conversation_id")
+            if cid and not set(ask_rules) & NEVER_REMEMBER:
+                with self.lock:
+                    if self.key(cid, spec.name, args, ask_rules) in self.remembered:
+                        return Decision("run", "approved earlier in this conversation for exactly these arguments "
+                                               "(remember)", rules, "session")
         reason = "; ".join(dict.fromkeys(reasons)) or hits[-1][1]
         return Decision(worst, reason, rules, by)
 
@@ -348,10 +395,14 @@ class Approval:
     job_id: str | None = None
     on_approve: Callable[[], str | None] | None = None
     event: threading.Event = field(default_factory=threading.Event)
+    args_sha256: str = ""
+
+    def __post_init__(self):
+        self.args_sha256 = args_hash(self.args)
 
     def to_json(self) -> dict:
         return {"id": self.id, "created": self.created, "kind": self.kind, "tool": self.tool, "args": self.args,
-                "reason": self.reason, "risk": self.risk, "rules": self.rules,
+                "args_sha256": self.args_sha256, "reason": self.reason, "risk": self.risk, "rules": self.rules,
                 "conversation_id": self.conversation_id, "turn_id": self.turn_id, "call_id": self.call_id,
                 "status": self.status, "job_id": self.job_id}
 
@@ -391,11 +442,18 @@ class ApprovalBroker:
         with self.lock:
             return self.pending.get(aid)
 
-    def decide(self, aid: str, decision: str, remember: str | None = None, by: str = "user") -> dict:
+    def decide(self, aid: str, decision: str, remember: str | None = None, by: str = "user",
+               args_sha256: str | None = None, require_hash: bool = False) -> dict:
+        """Approve or deny a pending call. Approving needs `args_sha256` to equal the SHA-256 of the
+        pending call's exact arguments when given (always, over HTTP: require_hash), so an answer
+        can never approve something other than what the card showed."""
         if decision not in ("approve", "deny"):
             raise ValueError("decision must be 'approve' or 'deny'")
         if remember not in (None, "session"):
             raise ValueError("remember must be 'session' or null")
+        if args_sha256 is not None and (not isinstance(args_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}",
+                                                                                              args_sha256)):
+            raise ValueError("args_sha256 must be 64 lowercase hex characters")
         with self.lock:
             a = self.pending.get(aid)
             if a is None or a.status != "pending":
@@ -404,12 +462,17 @@ class ApprovalBroker:
                     raise KeyError(aid)
                 return {"ok": False, "status": row["status"], "job_id": row.get("job_id"),
                         "error": f"approval is already {row['status']}"}
+            if decision == "approve":
+                if args_sha256 is None and require_hash:
+                    raise ValueError("args_sha256 (the SHA-256 shown on the approval card) is required to approve")
+                if args_sha256 is not None and args_sha256 != a.args_sha256:
+                    raise ValueError("args_sha256 does not match the pending call's arguments; nothing was approved")
             a.status = "approved" if decision == "approve" else "denied"
             a.remember = remember
         remembered = False
         if a.status == "approved" and remember == "session" and a.kind == "tool":
             ask_rules = [r for r in a.rules if self.policy.action_for(r) == "ask"]
-            remembered = self.policy.remember(a.tool, a.args, ask_rules)
+            remembered = self.policy.remember(a.tool, a.args, ask_rules, a.conversation_id)
         if a.status == "approved" and a.on_approve:
             try:
                 a.job_id = a.on_approve()
@@ -426,7 +489,8 @@ class ApprovalBroker:
         if a.job_id:
             out["job_id"] = a.job_id
         if remember == "session" and not remembered and a.status == "approved":
-            out["note"] = "this kind of action is never remembered; you will be asked each time"
+            out["note"] = ("this kind of action is never remembered (shell, installs, network, deletes, models, paths "
+                           "outside the workspace); you will be asked each time")
         return out
 
     def wait(self, aid: str, timeout: float, cancelled: Callable[[], bool] | None = None) -> str:
@@ -463,8 +527,8 @@ class ApprovalBroker:
 
 def describe_rules(settings: dict | None = None) -> list[dict]:
     p = Policy(settings)
-    return [{"rule": k, "default": v[0], "action": p.action_for(k), "covers": v[1], "locked": k in LOCKED}
-            for k, v in RULES.items()]
+    return [{"rule": k, "default": v[0], "action": p.action_for(k), "covers": v[2], "locked": k in LOCKED,
+             "rememberable": v[1]} for k, v in RULES.items()]
 
 
 def dumps_args(args: Any, limit: int = 20000) -> str:
@@ -472,5 +536,5 @@ def dumps_args(args: Any, limit: int = 20000) -> str:
     return s if len(s) <= limit else s[:limit] + "...(truncated)"
 
 
-__all__ = ["RULES", "LOCKED", "Decision", "Policy", "ApprovalBroker", "Approval", "flag", "gpu_reason", "check_path",
-           "scan_python", "scan_node", "scan_shell", "describe_rules"]
+__all__ = ["RULES", "LOCKED", "NEVER_REMEMBER", "Decision", "Policy", "ApprovalBroker", "Approval", "flag",
+           "gpu_reason", "check_path", "scan_python", "scan_node", "scan_shell", "describe_rules", "args_hash"]

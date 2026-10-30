@@ -156,11 +156,20 @@ def font(role: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 def open_image_safely(path: Path, limits: Limits | None = None) -> Image.Image:
     """Open a still with the same caps as the training loaders (file size, pixel count)."""
+    from jev.tools.base import NotRegularFile, open_regular
+
     limits = limits or Limits()
-    if path.stat().st_size > limits.max_image_bytes:
+    try:
+        fh = open_regular(path, "rb")          # never blocks on a FIFO, never follows a final symlink
+    except NotRegularFile as e:
+        raise MediaError(str(e)) from e
+    except OSError as e:
+        raise MediaError(f"{Path(path).name}: cannot open ({e.strerror})") from e
+    if os.fstat(fh.fileno()).st_size > limits.max_image_bytes:
+        fh.close()
         raise MediaError(f"{path.name}: larger than {limits.max_image_bytes >> 20} MB")
     try:
-        im = Image.open(path)
+        im = Image.open(fh)
         w, h = im.size
         if w * h > limits.max_image_pixels:
             raise MediaError(f"{path.name}: {w}x{h} exceeds the {limits.max_image_pixels / 1e6:.0f} MP cap")

@@ -23,10 +23,29 @@ from jev.media import images as I
 from jev.media import slides as S
 from jev.media import tts as T
 from jev.media import video as V
+import functools
+
 from jev.media.common import Limits, MediaError, open_image_safely
-from jev.tools.base import ToolContext, ToolResult, tool
+from jev.sandbox import sandbox_for
+from jev.tools.base import ToolContext, ToolResult
+from jev.tools.base import tool as _tool
 
 RESOLUTIONS = {"1080p": (1920, 1080), "720p": (1280, 720), "480p": (854, 480)}
+# tools that start FFmpeg / ffprobe or a speech engine: they run in the conversation's sandbox and,
+# on a weak sandbox, ask first (the locked weak_sandbox row)
+RUNS_FFMPEG = {"make_explainer_video", "text_to_speech", "probe_media", "find_scenes", "search_footage",
+               "make_highlight_reel", "cut_video", "generate_video"}
+
+
+def tool(name: str, **kw):
+    """jev.tools.base.tool, plus: every FFmpeg call the tool makes runs in its conversation's sandbox."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def in_sandbox(ctx: ToolContext, *a, **k):
+            with F.use_sandbox(sandbox_for(ctx.settings)):
+                return fn(ctx, *a, **k)
+        return _tool(name, runs_code=name in RUNS_FFMPEG, **kw)(in_sandbox)
+    return wrap
 APPROVAL_SECONDS = 600.0
 
 

@@ -16,7 +16,8 @@ followed by polling an event log, the same pattern as training runs:
 `i` (its index), `t` (unix time) and `event`. Jobs live in memory: after a backend restart
 their event logs are gone (conversations, messages, artifacts and the audit log are in SQLite).
 
-Errors are `{error: "..."}` with: 400 bad input, 401 token, 403 outside the workspace / granted
+Errors are `{error: "..."}` with: 400 bad input (including an approval whose `args_sha256` is
+missing or does not match, and a workspace path that is a FIFO, socket or device), 401 token, 403 outside the workspace / granted
 folders or refused by `approval_rules`, 404 unknown id, 409 the conversation is still answering,
 413 file too large, 421 bad Host, 501 science module not installed, 502 Ollama returned an
 error, 503 Ollama isn't running (the message says how to start it).
@@ -25,19 +26,19 @@ error, 503 Ollama isn't running (the message says how to start it).
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/api/jev/status` | | `{version, ollama: {url, reachable, version, error?}, default_model, models: [model], tools: [{name, description, risk, category}], workspace_root, data_dir, sandbox: {method, network_isolation, filesystem, rlimits, process_tree_kill, windows_job, probe, limits}, network_allowed, gpu: {cuda, mps, devices: [{name, memory_gb}]}, approval_rules: [{rule, default, action, covers, locked}]}` |
+| GET | `/api/jev/status` | | `{version, ollama: {url, reachable, version, error?}, default_model, models: [model], tools: [{name, description, risk, category}], workspace_root, data_dir, sandbox: {method, network_isolation, filesystem, rlimits, process_tree_kill, windows_job, probe, limits, fs_isolated, net_isolated, data_dir_protected, tmpfs_size_limit, cgroup_scope, weak, weak_reasons, isolation, isolation_notes, wsl: {detected, interop_enabled, windows_path_in_PATH}}, network_allowed, gpu: {cuda, mps, devices: [{name, memory_gb}]}, approval_rules: [{rule, default, action, covers, locked, rememberable}]}`. `sandbox.isolation` is `strong`, `weaker (WSL interop)` or `weak`; when `weak` (no file-system or no network isolation, `weak_reasons` says which) every tool that runs code or FFmpeg asks first (the locked `weak_sandbox` row); `isolation_notes` explains a `weaker` result (docs/jev/SAFETY.md) |
 | GET | `/api/jev/models` | | `{models: [model], imported: [{name, path, sha256, bytes, created}]}`; `model` = `{name, size_bytes, family, parameter_size, quantization, digest, modified, remote}` (from Ollama `/api/tags`; `remote: true` marks Ollama cloud models, which JEV refuses unless `allow_cloud_models`) |
 | POST | `/api/jev/models/pull` | `{name}` | `{approval_id, status: "pending"}`; downloading a model is an approval-gated action. Approving returns `job_id`; progress goes to `/api/jev/jobs/<job_id>/events`. If you set the `model_download` (and `network`) rows to `run` in `approval_rules`, the reply is `{approval_id, status: "auto_run", job_id}` |
 | POST | `/api/jev/models/import` | `{gguf_path, name}` | `{approval_id, status}`; imports a local GGUF file you own (it must be inside a folder granted to JEPA Studio, or be a file granted by the desktop shell's `pick_gguf_file` dialog) into Ollama, recording its SHA-256 (in `models`, and in the job's `done` event) |
 | DELETE | `/api/jev/models/<name>` | | `{approval_id, status}` (deleting asks). URL-encode the name (`llama3.1%3A8b`; `/` as `%2F`) |
 | GET | `/api/jev/settings` | | the settings below plus `rules` (the approval table, as in `status.approval_rules`) and `paths: {data_dir, settings, db, workspaces, exports}` (where everything is on disk) |
-| POST | `/api/jev/settings` | `{default_model?, limits?: {cpu_seconds, memory_mb, wall_seconds, max_output_mb, max_file_mb}, network_allowed?, ollama_url?}` | the new settings. `ollama_url` must be loopback unless `allow_remote_ollama` is set **in the file**; `approval_rules`, `allow_remote_ollama`, `allow_cloud_models` can only be changed by editing `jev-data/settings.json` (400 otherwise); limits outside sane bounds are refused |
+| POST | `/api/jev/settings` | `{default_model?, limits?: {cpu_seconds, memory_mb, wall_seconds, max_output_mb, max_file_mb, max_workspace_mb}, network_allowed?, ollama_url?}` | the new settings. `ollama_url` must be loopback unless `allow_remote_ollama` is set **in the file**; `approval_rules`, `allow_remote_ollama`, `allow_cloud_models` can only be changed by editing `jev-data/settings.json` (400 otherwise); limits outside sane bounds are refused. Every change is written to the audit log (`kind: "settings"`, `tool: "settings_update"`, `status: "applied"`, `args: {patch, changed: {<key>: {before, after}}}`) |
 
 ## All of your data
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/api/jev/export` | | a zip (`Content-Disposition: attachment`): `jev-data.json` (`format: "jev-export/1"`: every conversation with its turns, messages, tool calls, approvals and artifacts; the whole audit log; imported models; `settings: {file, effective, paths}`) and `workspaces/<folder>/...` (every workspace file and the science renders, without `.venv`, caches or symlinks). A copy is left in `jev-data/exports/` |
+| GET | `/api/jev/export` | | a zip (`Content-Disposition: attachment`): `jev-data.json` (`format: "jev-export/1"`: every conversation with its turns, messages, tool calls, approvals and artifacts; the whole audit log; imported models; `settings: {file, effective, paths}`) and `workspaces/<folder>/...` (every workspace file and the science renders, without `.venv`, caches, symlinks or FIFOs). A copy (mode 0600) is left in `jev-data/exports/`, which keeps only the 3 newest export zips |
 | POST | `/api/jev/data/delete` | `{keep_audit_log?: false}` | `{approval_id, status}` (the `delete` row: it asks). Approving stops running turns and science jobs, then deletes every conversation (rows and workspace folders), `_science/`, `exports/`, the imported-model records and, unless `keep_audit_log`, every audit row created before the request (the approval for this deletion stays as the first row of the new log; with `keep_audit_log` the tool arguments are redacted instead). Then `VACUUM`, so deleted rows do not linger in `jev.db`. `settings.json` (your approval rules) and the models in Ollama are kept; delete the `jev-data/` folder or use `ollama rm` for those. Only conversation workspaces inside `workspace_root` are removed, never the whole folder |
 
 ## Conversations and turns
@@ -60,8 +61,8 @@ Turn event records (`event` field):
 |---|---|---|
 | `start` | `model, conversation_id` | the turn began |
 | `token` | `text` | streamed model text (a tool call written as text is held back, not streamed) |
-| `tool_call` | `call_id, name, args, risk, decision, reason` | the model asked for a tool; `decision` is `run`, `ask` or `deny` (strings in `args` are cut at 20 000 characters) |
-| `approval_request` | `approval_id, call_id, name, args, reason, risk, rules` | waiting for you (`/api/jev/approvals/<id>`); the turn's `status` is `waiting_approval` |
+| `tool_call` | `call_id, name, args, risk, decision, reason` | the model asked for a tool; `decision` is `run`, `ask` or `deny` (strings in `args` are cut at 20 000 characters here, for display only) |
+| `approval_request` | `approval_id, call_id, name, args, args_sha256, reason, risk, rules` | waiting for you (`/api/jev/approvals/<id>`); the turn's `status` is `waiting_approval`. `args` are the complete arguments, never cut, and `args_sha256` is the SHA-256 of their canonical JSON (sorted keys, no spaces, UTF-8); a call whose arguments are over 1 000 000 characters is refused instead of asked, because no card could show it |
 | `approval_result` | `approval_id, call_id, status` | `approved`, `denied`, `expired` (no answer within `approval_timeout_s`, default 30 min) or `cancelled` |
 | `progress` | `call_id, fraction, message` | from a running tool (`fraction` may be `null` when unknown) |
 | `tool_result` | `call_id, ok, content, artifacts: [artifact], data?` | `content` is what the model reads (<= ~4000 chars) |
@@ -77,18 +78,20 @@ Turn event records (`event` field):
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/api/jev/approvals` | `?status=pending`, `?limit=N` | `{approvals: [{id, created, kind, tool, args, reason, risk, rules, conversation_id, turn_id, call_id, status, decided_by, decided, remember, job_id}]}` (newest first; `limit` 1 to 10 000, default 500) |
-| POST | `/api/jev/approvals/<id>` | `{decision: "approve" \| "deny", remember?: "session" \| null}` | `{ok, status, job_id?, note?}`; `job_id` when approving started a job (model pull/import/delete, a long render). Deciding twice returns `{ok: false, status}` |
+| GET | `/api/jev/approvals` | `?status=pending`, `?limit=N` | `{approvals: [{id, created, kind, tool, args, args_sha256, reason, risk, rules, conversation_id, turn_id, call_id, status, decided_by, decided, remember, job_id}]}` (newest first; `limit` 1 to 10 000, default 500; a pending approval carries its complete arguments) |
+| POST | `/api/jev/approvals/<id>` | `{decision: "approve" \| "deny", remember?: "session" \| null, args_sha256}` | `{ok, status, job_id?, note?}`; `job_id` when approving started a job (model pull/import/delete, a long render). **Approving requires `args_sha256`**, the hash the approval card showed: missing, malformed or not matching the pending call's arguments is 400 and nothing is approved (denying needs no hash). Deciding twice returns `{ok: false, status}` |
 
 Every decision (including automatic ones) is written to the audit log in the SQLite store:
 `status` is `auto_run`, `auto_deny`, `remembered` (automatic), or `pending`, `approved`,
-`denied`, `expired`, `cancelled`, `failed`; `decided_by` is `policy`, `session`, `settings`,
-`user`, `terminal`, `timeout` or `restart`. `kind` is `tool`, `model_pull`, `model_import`,
-`model_delete`, `conversation_delete`, `data_delete` or `science`.
-`remember: "session"` allows the same tool with the same argument *shape* (the same argument
-names and the same approval rows triggered) for the rest of the backend session only; nothing
-is remembered across restarts, and deletes, model downloads/imports/deletes and sending data
-off the machine are never remembered (`note` says so).
+`denied`, `expired`, `cancelled`, `failed`, and `applied` for settings changes; `decided_by` is
+`policy`, `session`, `settings`, `user`, `terminal`, `timeout` or `restart`. `kind` is `tool`,
+`model_pull`, `model_import`, `model_delete`, `conversation_delete`, `data_delete`, `science` or
+`settings`. Every row has `args_sha256`.
+`remember: "session"` allows the same tool with **exactly the same arguments** (the same
+`args_sha256`) **in the same conversation** for the rest of the backend session only; nothing is
+remembered across restarts. Calls that hit a row whose `rememberable` is false (shell commands,
+installs, network use, deletes, model downloads/imports/deletes, paths outside the workspace,
+sending data off the machine) are never remembered (`note` says so) and are asked every time.
 
 ## Artifacts
 

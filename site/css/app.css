@@ -991,6 +991,8 @@ dialog::backdrop { background: rgb(9 12 20 / 0.62); }
 .appr-more { margin: 0 0 var(--sp-3); font-size: var(--step--1); }
 .appr-more summary { cursor: pointer; color: var(--ink-2); min-height: 24px; }
 .appr-more pre { margin: var(--sp-1) 0 0; padding: var(--sp-2); background: var(--surface-2); border-radius: var(--r-s); font: 12px/1.45 var(--mono); max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.appr-hash-row { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
+.appr-hash-row code { font: 11px/1.4 var(--mono); }
 .appr-actions { justify-content: flex-end; margin-top: var(--sp-2); }
 .appr-actions #appr-deny { margin-right: auto; }
 .appr-foot { margin: var(--sp-3) 0 0; }

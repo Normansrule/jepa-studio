@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import sys
 import threading
 import traceback
@@ -468,7 +469,21 @@ def make_handler(studio: Studio, token: str, port_ref: list):
         def _send_file(self, f) -> None:
             from urllib.parse import quote
 
-            size = f.path.stat().st_size
+            # open first, without following a final symlink or blocking on a FIFO, and send that file
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | \
+                getattr(os, "O_BINARY", 0)
+            try:
+                fd = os.open(f.path, flags)
+            except OSError:
+                return self._send(404, {"error": "file is gone or is not a regular file"})
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                os.close(fd)
+                return self._send(403, {"error": "not a regular file"})
+            if hasattr(os, "set_blocking"):
+                os.set_blocking(fd, True)
+            fh_open = os.fdopen(fd, "rb")
+            size = st.st_size
             ascii_name = re.sub(r'[^A-Za-z0-9._ -]', "_", f.filename) or "file"
             self.send_response(200)
             self.send_header("Content-Type", f.mime)
@@ -485,7 +500,7 @@ def make_handler(studio: Studio, token: str, port_ref: list):
                 self.send_header("Vary", "Origin")
             self.end_headers()
             try:
-                with open(f.path, "rb") as fh:
+                with fh_open as fh:
                     while chunk := fh.read(f.chunk):
                         self.wfile.write(chunk)
             except (BrokenPipeError, ConnectionResetError):

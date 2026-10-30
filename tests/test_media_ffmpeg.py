@@ -117,3 +117,70 @@ def test_decode_and_encode_frames(tmp_path):
     assert not (tmp_path / "bad.mp4").exists()
     kfs = F.keyframe_times(out, tmp_path)
     assert kfs and kfs[0] == 0.0
+
+
+# ------------------------------------------------------------------ review H2: demuxers, links, sandbox
+def _weak_sandbox():
+    from jev.sandbox import Sandbox
+    return Sandbox({"sandbox": {"isolation": "none"}})        # what Linux without bubblewrap, macOS, Windows get
+
+
+def test_h2_sniff_container_refuses_playlists_and_scripts(tmp_path):
+    clip = make_clip(tmp_path)
+    assert F.sniff_container(clip)[0] == "mov"
+    for name, body in (("c.mp4", "ffconcat version 1.0\nfile /etc/passwd\n"),
+                       ("p.mp4", "#EXTM3U\n#EXTINF:1,\nfile:///etc/passwd\n"),
+                       ("s.mp4", "v=0\no=- 0 0 IN IP4 127.0.0.1\n"), ("x.wav", "data:,hello")):
+        (tmp_path / name).write_text(body)
+        with pytest.raises(MediaError, match="not a recognised media file"):
+            F.sniff_container(tmp_path / name)
+        with pytest.raises(MediaError, match="not a recognised media file"):
+            F.probe(name, tmp_path)
+
+
+def test_h2_callers_cannot_pick_dangerous_demuxers(tmp_path):
+    clip = make_clip(tmp_path, audio=False)
+    out = tmp_path / "o.mp4"
+    for fmt in ("hls", "concat", "image2", "data", "ffmetadata"):
+        target = clip if fmt != "concat" else tmp_path / "l.txt"
+        if fmt == "concat":
+            target.write_text(f"file '{clip}'\n")             # absolute path: not a plain name next to the list
+        with pytest.raises(MediaError):
+            F.run(["-f", fmt, "-i", str(target), "-c", "copy", str(out)], tmp_path, outputs=[out])
+    (tmp_path / "l.txt").write_text("file 'c.mp4'\nfile 'c.mp4'\n")     # JEV's own lists still work
+    F.run(["-f", "concat", "-safe", "1", "-i", "l.txt", "-c", "copy", str(out)], tmp_path, outputs=[out], cwd=tmp_path)
+    assert F.probe(out, tmp_path).duration_s > 3
+
+
+def test_h2_weak_sandbox_refuses_links_fifos_and_hard_links(tmp_path):
+    import os
+    clip = make_clip(tmp_path, audio=False)
+    os.symlink("c.mp4", tmp_path / "link.mp4")
+    os.link(clip, tmp_path / "hard.mp4")
+    os.mkfifo(tmp_path / "fifo.mp4")
+    with F.use_sandbox(_weak_sandbox()):
+        for name, why in (("link.mp4", "symbolic link"), ("hard.mp4", "hard link"), ("fifo.mp4", "regular file")):
+            with pytest.raises(MediaError, match=why):
+                F.probe(name, tmp_path)
+            with pytest.raises(MediaError, match=why):
+                list(F.decode_frames(name, tmp_path, (32, 32)))
+    from jev.sandbox import Sandbox
+    strong = Sandbox({"sandbox": {"isolation": "auto"}})
+    if strong.capabilities()["fs_isolated"]:
+        with F.use_sandbox(strong):                    # a link inside the workspace is fine under bubblewrap
+            assert F.probe("link.mp4", tmp_path).width == 160
+        with pytest.raises(MediaError, match="regular file"):
+            F.probe("fifo.mp4", tmp_path)
+
+
+def test_h2_media_pipeline_works_without_bwrap(tmp_path):
+    """Simulates a machine without bubblewrap: FFmpeg still runs (in the weak sandbox) end to end."""
+    with F.use_sandbox(_weak_sandbox()):
+        clip = make_clip(tmp_path, seconds=1.0)
+        info = F.probe(clip, tmp_path)
+        assert info.has_video and info.has_audio
+        frames = list(F.decode_frames(clip, tmp_path, (32, 16)))
+        assert len(frames) == 12
+        assert F.keyframe_times(clip, tmp_path)[0] == 0.0
+        out = F.encode_frames(frames, tmp_path / "e.mp4", tmp_path, size=(32, 16), fps=12)
+        assert F.probe(out, tmp_path).width == 32
