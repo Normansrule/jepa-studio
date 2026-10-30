@@ -150,7 +150,9 @@ def test_bwrap_file_system_is_read_only_outside_workspace(ws, tmp_path):
         try:
             target = os.path.join(d, "outside.txt")
             r = sb.run(py(f"open({target!r}, 'w').write('x')"), ws)
-            assert not r.ok and "Read-only file system" in r.stderr and not os.path.exists(target)
+            # /var is not part of the sandbox's root at all (N9); the system folders that are, are read-only
+            assert not r.ok and ("Read-only file system" in r.stderr or "No such file" in r.stderr)
+            assert not os.path.exists(target)
         finally:
             import shutil
             shutil.rmtree(d, ignore_errors=True)

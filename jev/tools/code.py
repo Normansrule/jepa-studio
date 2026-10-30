@@ -237,6 +237,9 @@ def _install_needs(args: dict, ctx: ToolContext) -> str | None:
                         "writable during the install, the workspace is read-only")
 
 
+SITE_PIP_CONFIGS = ("pip.conf", "pip.ini")     # pip's per-environment ("site") configuration files
+
+
 @tool(name="install_package",
       description="Install Python packages with pip into this conversation's own virtual environment "
                   "(kept in jev-data, outside the workspace; run_python then uses it). ALWAYS asks the user first.",
@@ -282,6 +285,12 @@ def install_package(ctx: ToolContext, packages: list, manager: str = "pip",
         log.append(f"created the package venv {venv} (sees this computer's packages; installs go into it)")
     if trusted_venv_python(venv) is None:
         return ToolResult(False, f"refused: {venv} does not hold this Python's interpreter; nothing was installed")
+    # pip reads <venv>/pip.conf (pip.ini on Windows) as "site" configuration even with --isolated and
+    # PIP_CONFIG_FILE set: a build script from an earlier install could have planted an index there
+    for name in SITE_PIP_CONFIGS:
+        if os.path.lexists(venv / name):
+            wsfs.rmtree(venv, name)
+            log.append(f"removed {name} from the package venv (pip would have read its index settings)")
     argv = pip_argv(ctx, packages, build_from_source)
     res = sb.run(argv, ctx.workspace, lim, network=True, cancelled=ctx.cancelled, venv=venv, tmp=tmp,
                  mounts=Mounts(rw=[venv, cache, tmp, home], workspace_writable=False),
@@ -400,16 +409,16 @@ def jepa_embed_images(ctx: ToolContext, run_id: str, folder: str = ".", max_imag
     from jepa_studio.weights import WeightError, load_run_weights
 
     d = _run_dir(ctx, run_id)
-    cfg = load_config(d / "config.json")
+    cfg = load_config(d / "config.json")  # wsfs-ok: a run in <root>/runs (backend-owned), not the workspace
     if cfg["data"]["kind"] not in ("images", "synthetic-shapes"):
         raise ToolError(f"run {run_id} was trained on {cfg['data']['kind']}, not images")
     src = ctx.path(folder)
-    paths = safe_listing(src, IMAGE_EXT, max_images)
+    paths = safe_listing(src, IMAGE_EXT, max_images)  # wsfs-ok: listing only; files are read by _load_ws_image
     if not paths:
         raise ToolError(f"no images (png/jpg/webp/bmp/gif) in {folder!r}")
     model = build_encoder(cfg)
     try:
-        verified = load_run_weights(model, d)
+        verified = load_run_weights(model, d)  # wsfs-ok: a run in <root>/runs (backend-owned)
     except WeightError as e:
         raise ToolError(f"weights of {run_id} failed their hash check: {e}") from e
     size = cfg["data"]["image_size"]
@@ -462,13 +471,15 @@ def jepa_train(ctx: ToolContext, name: str, data_folder: str | None = None, epoc
     if data_folder:
         ov["data"] = {"kind": "images", "path": str(ctx.path(data_folder))}
     try:
-        cfg = load_config(overrides=ov)
+        cfg = load_config(overrides=ov)  # wsfs-ok: no file read (overrides only)
     except ValueError as e:
         raise ToolError(str(e)[:500]) from e
     root = Path(ctx.settings.get("root") or ".").resolve()
     rid = f"{name}-{secrets.token_hex(3)}"
     run_dir = root / "runs" / rid
-    tr = Trainer(cfg, run_dir=run_dir, log=lambda *_: None)
+    # run_dir is <root>/runs; workspace images go through jepa_studio.data.loaders.open_regular
+    # (no final link followed, FIFOs/devices refused without blocking) after safe_listing
+    tr = Trainer(cfg, run_dir=run_dir, log=lambda *_: None)  # wsfs-ok: see the comment above
     studio = ctx.settings.get("_studio")
     rec = {"run_id": rid, "dir": run_dir, "status": "running", "trainer": tr, "kind": "pretrain", "cfg": cfg}
 

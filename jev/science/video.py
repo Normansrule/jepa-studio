@@ -21,13 +21,13 @@ def open_writer(path: Path, fps: float, fmt: str | None = None):
     import imageio.v2 as imageio
     fmt = fmt or Path(path).suffix.lstrip(".")
     if fmt == "gif":
-        return imageio.get_writer(path, mode="I", duration=1000.0 / fps, loop=0)
+        return imageio.get_writer(path, mode="I", duration=1000.0 / fps, loop=0)  # wsfs-ok: scratch path (published via wsfs)
     try:
         import imageio_ffmpeg  # noqa: F401
     except ImportError as e:   # pragma: no cover - depends on the install
         raise RuntimeError("MP4 output needs imageio-ffmpeg: pip install imageio-ffmpeg "
                            "(or ask for format='gif')") from e
-    return imageio.get_writer(path, fps=fps, codec="libx264", quality=8, pixelformat="yuv420p",
+    return imageio.get_writer(path, fps=fps, codec="libx264", quality=8, pixelformat="yuv420p",  # wsfs-ok: scratch path
                               macro_block_size=2, ffmpeg_log_level="error")
 
 

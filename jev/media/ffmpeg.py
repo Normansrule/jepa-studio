@@ -102,7 +102,8 @@ def _run_limits(sb: Sandbox, timeout: float | None) -> RunLimits:
     t = float(timeout or 3600.0)
     return RunLimits(cpu_seconds=int(t * max(1, os.cpu_count() or 1)) + 60, memory_mb=max(base.memory_mb, 4096),
                      wall_seconds=int(t) + 60, max_output_mb=max(base.max_output_mb, 8192),
-                     max_file_mb=base.max_file_mb, max_workspace_mb=base.max_workspace_mb)
+                     max_file_mb=base.max_file_mb, max_workspace_mb=base.max_workspace_mb,
+                     max_workspace_entries=base.max_workspace_entries)
 
 
 def _spawn(cmd: list[str], ws: Path, *, cwd: Path | None = None, stdin: bool = False, text: bool = False,

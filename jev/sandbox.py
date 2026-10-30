@@ -83,6 +83,10 @@ MACOS_PROFILE_VERIFIED = False
 # /run entries some systems need inside the sandbox (NixOS keeps its system and its NVIDIA / OpenGL
 # driver libraries there); they are recreated as read-only symlinks, everything else in /run is hidden
 RUN_KEEP = ("/run/current-system", "/run/booted-system", "/run/opengl-driver", "/run/opengl-driver-32")
+# bubblewrap's root is an empty tmpfs holding only these system folders (read-only) plus what a run
+# needs; everything else (/var, /opt, /srv, /home, /root, /mnt, /media, /run, custom top-level
+# folders) is absent. /nix and /gnu are the NixOS / Guix stores.
+ROOT_ALLOW = ("/usr", "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/sys", "/nix", "/gnu")
 
 
 class SandboxError(RuntimeError):
@@ -308,6 +312,7 @@ class Limits:
     max_output_mb: int = 200
     max_file_mb: int = 500
     max_workspace_mb: int = 2048
+    max_workspace_entries: int = 200_000
 
     @classmethod
     def from_settings(cls, s: dict | None) -> "Limits":
@@ -486,23 +491,33 @@ def snapshot(workspace: Path, limit: int = 5000) -> dict[str, tuple[int, int]]:
     return out
 
 
-def workspace_usage(workspace: Path, max_entries: int = 500_000) -> int:
-    """Bytes the workspace uses on disk (every file, caches and .tmp included; allocated blocks on
-    POSIX, so a sparse file counts for what it really occupies)."""
+def workspace_usage(workspace: Path, max_entries: int = 200_000) -> tuple[int, int, bool]:
+    """(bytes, entries, complete) for the workspace: bytes on disk of every file (caches and .tmp
+    included; allocated blocks on POSIX, so a sparse file counts for what it really occupies) and
+    the number of files and folders seen. The walk stops after max_entries (its cost is bounded);
+    complete=False then, and callers treat that as over the limit (fail closed, N10)."""
     total, n = 0, 0
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        for fn in filenames + dirnames:
-            n += 1
-            if n > max_entries:
-                return total
-            try:
-                st = os.lstat(os.path.join(dirpath, fn))
-            except OSError:
-                continue
-            if stat.S_ISDIR(st.st_mode):
-                continue
-            total += st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
-    return total
+    stack = [str(workspace)]
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                n += 1
+                if n > max_entries:
+                    return total, n, False
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISDIR(st.st_mode):
+                    stack.append(e.path)
+                    continue
+                total += st.st_blocks * 512 if hasattr(st, "st_blocks") else st.st_size
+    return total, n, True
 
 
 def _user_process_count() -> int:
@@ -608,7 +623,7 @@ def seccomp_program(machine: str | None = None) -> bytes | None:
     return b"".join(struct.pack("=HBBI", *i) for i in prog)
 
 
-def listening_unix_sockets(limit: int = 2000) -> list[str]:
+def listening_unix_sockets(limit: int | None = None) -> list[str]:
     """Paths of the Unix sockets listening on this host (from /proc/net/unix): bubblewrap and
     unshare mask the ones the sandbox could otherwise see (/var/lib/mysql/mysqld.sock, LXD, ...)."""
     out: list[str] = []
@@ -627,7 +642,7 @@ def listening_unix_sockets(limit: int = 2000) -> list[str]:
                         out.append(path)
                 except OSError:
                     continue
-                if len(out) >= limit:
+                if limit is not None and len(out) >= limit:
                     break
     except OSError:
         pass
@@ -936,6 +951,21 @@ class Sandbox:
                 keep.append(real)          # the prefix is (or contains) your home: only the binary itself
             else:
                 keep.append(prefix)
+        # CUDA and other library folders the environment points at, and the interpreter's import path
+        for var in ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"):
+            if os.environ.get(var):
+                keep.append(Path(os.environ[var]).resolve())
+        for var in ("LD_LIBRARY_PATH",):
+            for d in (os.environ.get(var) or "").split(os.pathsep):
+                if d:
+                    keep.append(Path(d).resolve())
+        for d in sys.path:                      # site folders outside the prefix (user / distro site-packages)
+            if d and os.path.isdir(d) and Path(d).name in ("site-packages", "dist-packages") and \
+                    not (home is not None and _under(Path(d).resolve(), home)):    # user site: -I ignores it
+                keep.append(Path(d).resolve())
+        for d in ("/opt/cuda", "/usr/local/cuda"):
+            if os.path.isdir(d):
+                keep.append(Path(d).resolve())
         keep += [Path(p).resolve() for p in extra]
         out = []
         for p in keep:
@@ -989,12 +1019,40 @@ class Sandbox:
             out.append(h)
         return out
 
+    def _bound_roots(self) -> tuple[list[tuple[str, str]], list[Path]]:
+        """The allowlisted root: (bwrap ops for the system folders, the real folders they show).
+        Top-level symlinks (merged /usr: /bin -> usr/bin) are recreated as symlinks."""
+        ops, real = [], []
+        for top in ROOT_ALLOW:
+            if os.path.islink(top):
+                ops.append(("--symlink", os.readlink(top), top))
+            elif os.path.isdir(top):
+                ops.append(("--ro-bind", top, top))
+                real.append(Path(top).resolve())
+        if not self.hide_home:                        # you chose to let code read your home folder and drives
+            for extra in [_home(), Path("/mnt"), Path("/media")]:
+                if extra is not None and extra.is_dir() and not extra.is_symlink():
+                    ops.append(("--ro-bind", str(extra), str(extra)))
+                    real.append(extra.resolve())
+        return ops, real
+
     def _wrap_bwrap(self, argv, ws, network, mounts, cwd, lim, hide_extra) -> tuple[list[str], list[int]]:
-        a = [self._exe("bwrap") or "bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-             "--unshare-cgroup-try", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        # The new root is an empty tmpfs (read-only at the end). Only system folders (ROOT_ALLOW) are
+        # bound into it, plus what this run needs (the interpreter installs, FFmpeg / speech engines,
+        # CUDA folders, the workspace, its scratch). /var, /opt, /srv, /home, /root, /mnt, /media,
+        # /run, /tmp and any other top-level folder are simply absent, so Unix sockets there are
+        # unreachable whatever network namespace their listener runs in.
+        a = [self._exe("bwrap") or "bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc",
+             "--unshare-uts", "--unshare-cgroup-try"]
+        root_ops, bound = self._bound_roots()
+        for op in root_ops:
+            a += list(op)
+        a += ["--dev", "/dev", "--proc", "/proc"]
+
+        def visible(p: Path) -> bool:
+            return any(_under(p, r) for r in bound)
         sized = bwrap_supports_size(_bwrap_version())
         tmp_bytes = max(64, int(lim.memory_mb)) << 20
-        ws_tmp = ws / ".tmp"
         late_ro = [Path("/dev")]
         # /tmp and /dev/shm: size-capped tmpfs (bwrap >= 0.10) or folders inside the workspace, which
         # count toward max_workspace_mb; never an unbounded RAM-backed tmpfs
@@ -1010,40 +1068,46 @@ class Sandbox:
             else:
                 a += ["--bind", str(ws_tmp), "/tmp"]
             a += ["--bind", str(shm), "/dev/shm"]
-        hidden = self._hidden_dirs(ws, hide_extra)
-        for h in hidden:
-            a += ["--tmpfs", str(h)]
-        if any(h == Path("/run") for h in hidden):
-            for keep in RUN_KEEP:
-                if os.path.islink(keep):
-                    a += ["--symlink", os.readlink(keep), keep]
-                elif os.path.isdir(keep):
-                    a += ["--ro-bind", keep, keep]
-        w = self.wsl()
-        if w.get("detected") and os.path.exists("/init") and not os.path.isdir("/init"):
-            a += ["--ro-bind", "/dev/null", "/init"]   # WSL's interop launcher
-        for dev in ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
-                    "/dev/dxg", "/dev/dri", "/dev/kfd", *[f"/dev/nvidia{i}" for i in range(8)]):
-            if os.path.exists(dev):
-                a += ["--dev-bind", dev, dev]
-        socks = ["/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock", *listening_unix_sockets()]
-        for sock in dict.fromkeys(socks):
-            sp = Path(sock)
-            if os.path.exists(sock) and not os.path.islink(sock) and not _under(sp, ws) and \
-                    not any(_under(sp, h) for h in hidden) and not _under(sp, Path("/tmp")):
-                a += ["--ro-bind", "/dev/null", sock]       # listening sockets outside the hidden folders
         ro = list(self._keep_paths())
         if network:
-            # a proxy CA bundle or resolv.conf living in a hidden folder must stay reachable
+            # a proxy CA bundle or resolv.conf's target (often under /run) must stay reachable
             for k in NET_FILE_ENV:
                 v = os.environ.get(k)
                 if v and os.path.exists(v):
                     ro.append(Path(v).resolve())
             if os.path.exists("/etc/resolv.conf"):
                 ro.append(Path("/etc/resolv.conf").resolve())
-        for p in ro:
-            if p.exists() and any(_under(p, h) for h in hidden) and not any(_under(h, p) for h in hidden):
+        protected = self._hidden_dirs(ws, hide_extra)
+        extra: list[Path] = []
+        for p in sorted({p for p in ro if p.exists()}, key=lambda p: (len(p.parts), str(p))):
+            if not (visible(p) or any(_under(p, d) for d in extra)):
+                extra.append(p)
+        for p in extra:
+            a += ["--ro-bind", str(p), str(p)]
+        bound += extra
+        a += ["--dir", "/run"]
+        for keep in RUN_KEEP:                          # NixOS: the system profile and the GPU driver libraries
+            if os.path.islink(keep):
+                a += ["--symlink", os.readlink(keep), keep]
+            elif os.path.isdir(keep):
+                a += ["--ro-bind", keep, keep]
+        for dev in ("/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
+                    "/dev/dxg", "/dev/dri", "/dev/kfd", *[f"/dev/nvidia{i}" for i in range(8)]):
+            if os.path.exists(dev):
+                a += ["--dev-bind", dev, dev]
+        # folders that must stay hidden though a bound folder contains them (jev-data inside a bound
+        # home when hide_home is off, a data folder under /usr, ...); a runtime inside one stays visible
+        hidden = [h for h in protected if visible(h) and h != Path("/run")]
+        for h in hidden:
+            a += ["--tmpfs", str(h)]
+        for p in extra:
+            if any(_under(p, h) for h in hidden):
                 a += ["--ro-bind", str(p), str(p)]
+        # defence in depth: sockets listening (in this network namespace) inside a bound folder
+        for sock in listening_unix_sockets():
+            sp = Path(sock)
+            if visible(sp) and not any(_under(sp, h) for h in hidden) and not _under(sp, ws):
+                a += ["--ro-bind", "/dev/null", sock]
         for p in mounts.ro:                          # always explicit: they may sit in a hidden or private folder
             p = Path(p).resolve()
             if p.exists():
@@ -1055,6 +1119,7 @@ class Sandbox:
         a += ["--bind" if mounts.workspace_writable else "--ro-bind", str(ws), str(ws)]
         for h in hidden + late_ro:
             a += ["--remount-ro", str(h)]
+        a += ["--remount-ro", "/"]                  # the root tmpfs itself: nothing can be created in it
         a += ["--chdir", str(cwd)]
         if not network:
             a += ["--unshare-net"]
@@ -1095,9 +1160,16 @@ class Sandbox:
 
     # ------------------------------------------------------------------ workspace size
     def workspace_over(self, ws: Path, limits: Limits | None = None) -> str | None:
+        """An error text when the workspace is over max_workspace_mb or holds more than
+        max_workspace_entries files and folders (the walk stops there, so a huge tree is refused,
+        never measured partially); None otherwise."""
         lim = limits or self.limits
         cap = int(lim.max_workspace_mb) << 20
-        used = workspace_usage(Path(ws))
+        used, entries, complete = workspace_usage(Path(ws), int(lim.max_workspace_entries))
+        if not complete:
+            return (f"workspace entry limit reached: the workspace holds more than {lim.max_workspace_entries} "
+                    f"files and folders, over limits.max_workspace_entries = {lim.max_workspace_entries}. Delete "
+                    "files (.tmp, caches, generated folders) before running more code")
         if used > cap:
             return (f"workspace size limit reached: the workspace uses {used / 2**20:.0f} MB, over limits."
                     f"max_workspace_mb = {lim.max_workspace_mb} MB. Delete files (large outputs, .tmp, caches) "

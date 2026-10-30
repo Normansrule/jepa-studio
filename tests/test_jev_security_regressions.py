@@ -390,11 +390,12 @@ def test_h4_wsl_interop_detected_reported_and_masked(tmp_path, monkeypatch, caps
         for fd in fds:
             os.close(fd)
         joined = " ".join(argv)
-        assert "--tmpfs /run" in joined and "--remount-ro /run" in joined and "--seccomp" in joined
-        if os.path.isdir("/mnt/wsl"):
-            assert "--tmpfs /mnt/wsl" in joined or "--tmpfs /mnt " in joined
-        if os.path.isfile("/init"):
-            assert "--ro-bind /dev/null /init" in joined
+        # N9: the root is an allowlist, so /run (WSL's interop sockets), /mnt (/mnt/wsl, /mnt/c) and
+        # /init are simply not part of it; /run is an empty folder of the read-only root
+        assert "--dir /run" in joined and "--remount-ro /" in joined and "--seccomp" in joined
+        pairs = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a in ("--ro-bind", "--bind")]
+        assert not any(d in ("/run", "/mnt", "/mnt/wsl", "/init") or d.startswith(("/run/WSL", "/mnt/"))
+                       for src, d in pairs if src != "/dev/null"), pairs
     from jev.cli import main
     main(["--root", str(tmp_path / "root"), "doctor"])
     out = capsys.readouterr().out
@@ -603,7 +604,9 @@ def test_m4_tmp_shm_and_hidden_tmpfs_are_bounded(var_ws):
             leftover.unlink()
     for target in (str(Path.home()), "/run", "/dev"):
         r = sb.run([PY, "-I", "-c", f"open({target!r} + '/jev-x', 'w').write('x')"], var_ws)
-        assert not r.ok and "Read-only file system" in r.stderr, (target, r.stderr)
+        # your home is absent from the allowlisted root (N9); /run and /dev are read-only
+        assert not r.ok and ("Read-only file system" in r.stderr or
+                             (target == str(Path.home()) and "No such file" in r.stderr)), (target, r.stderr)
 
 
 def test_m4_workspace_size_cap(tmp_path):

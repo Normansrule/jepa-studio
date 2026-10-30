@@ -109,6 +109,31 @@ def histogram_features(frames: np.ndarray) -> np.ndarray:
     return (feat / (np.linalg.norm(feat, axis=1, keepdims=True) + 1e-8)).astype(np.float32)
 
 
+RUN_FILES = ("encoder.safetensors", "encoder.sha256", "events.jsonl")
+
+
+def _copy_run(d: Path) -> Path:
+    """Copy a run's weight files into a fresh backend-owned scratch folder through wsfs (N11).
+    jepa_studio.weights reads with plain open()/read_text(); given the copy, it never meets a FIFO
+    (which would hang the turn), a device or a link pointing out of the workspace: those are refused
+    here, at the copy, and missing files are simply left out (the loader reports them)."""
+    import shutil
+
+    out = wsfs.new_scratch("run-")
+    try:
+        for name in RUN_FILES:
+            try:
+                src = wsfs.open_file(d, name, "rb")
+            except FileNotFoundError:
+                continue
+            with src, wsfs.open_file(out, name, "xb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+    except BaseException:
+        wsfs.drop_scratch(out)
+        raise
+    return out
+
+
 class JEPAFeaturizer:
     """Frame embeddings from a trained jepa_studio run (<run>/config.json + encoder.safetensors).
     The weights are checked against the hash the run recorded (jepa_studio.weights.load_run_weights)."""
@@ -120,8 +145,7 @@ class JEPAFeaturizer:
         from jepa_studio.weights import WeightError, load_run_weights
 
         d = Path(run_dir)
-        cfg_path = d / "config.json"
-        if not cfg_path.is_file():
+        if not (d / "config.json").exists():
             raise MediaError(f"{d.name}: not a jepa_studio run (no config.json)")
         cfg = json.loads(wsfs.read_text(d, "config.json"))
         arch = cfg.get("model", {}).get("arch")
@@ -130,10 +154,13 @@ class JEPAFeaturizer:
         if int(cfg.get("data", {}).get("channels", 3)) != 3:
             raise MediaError(f"{d.name} expects {cfg['data']['channels']} channels; footage is RGB")
         enc = build_encoder(cfg)
+        copy = _copy_run(d)
         try:
-            self.verified = load_run_weights(enc, d)
+            self.verified = load_run_weights(enc, copy)  # wsfs-ok: a scratch copy made through wsfs (_copy_run)
         except (WeightError, FileNotFoundError) as e:
             raise MediaError(f"{d.name}: cannot load encoder weights ({e})") from e
+        finally:
+            wsfs.drop_scratch(copy)
         enc.eval()
         bb = enc.backbone
         self.net = bb.frame if arch == "video-convnet" else bb

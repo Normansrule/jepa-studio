@@ -379,8 +379,51 @@ def register_artifacts(rt: Runtime, job: Job, result: ToolResult, ws: Path, cid:
     return out
 
 
+MAX_EXACT_INT = 2 ** 53     # JavaScript numbers (the app's approval card) are exact up to here
+
+
+def unrepresentable_values(obj, path: str = "") -> list[str]:
+    """Values the app cannot show exactly or the event stream cannot carry as strict JSON: integers
+    beyond +-2^53 and NaN / Infinity. Tool arguments holding any of them are refused."""
+    out: list[str] = []
+    if isinstance(obj, bool):
+        return out
+    if isinstance(obj, int):
+        if abs(obj) > MAX_EXACT_INT:
+            out.append(f"{path or 'value'}: integer beyond 2^53 (cannot be shown exactly)")
+    elif isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            out.append(f"{path or 'value'}: NaN/Infinity is not valid JSON")
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            out += unrepresentable_values(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            out += unrepresentable_values(v, f"{path}[{i}]")
+    return out
+
+
+def _json_safe(obj):
+    """A copy with integers beyond 2^53 and NaN/Infinity replaced by their text, for the audit log,
+    the event stream and the conversation history."""
+    if isinstance(obj, bool) or obj is None or isinstance(obj, str):
+        return obj
+    if isinstance(obj, int):
+        return str(obj) if abs(obj) > MAX_EXACT_INT else obj
+    if isinstance(obj, float):
+        return obj if obj == obj and obj not in (float("inf"), float("-inf")) else repr(obj).replace("nan", "NaN")
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def execute_call(rt: Runtime, job: Job, cid: str, tid: str, ws: Path, call: dict) -> tuple[bool, str]:
     name, args, call_id = call["name"], call.get("arguments") or {}, call["id"]
+    bad_values = unrepresentable_values(args)
+    if bad_values:
+        args = call["arguments"] = _json_safe(args)     # history and events stay strict JSON
     spec = REGISTRY.get(name)
     if spec is None:
         d = Decision("deny", f"there is no tool called {name!r}", ["unknown_tool"])
@@ -390,7 +433,7 @@ def execute_call(rt: Runtime, job: Job, cid: str, tid: str, ws: Path, call: dict
         msg = f"Error: no tool named {name!r}. Available: {', '.join(sorted(REGISTRY))}"
         job.emit("tool_result", call_id=call_id, ok=False, content=msg, artifacts=[])
         return False, msg
-    errs = validate(args, spec.parameters)
+    errs = bad_values or validate(args, spec.parameters)
     if errs:
         d = Decision("deny", "invalid arguments: " + "; ".join(errs[:5]), ["invalid_args"])
         rt.broker.record_auto(d, name, args, spec.risk, cid, tid, call_id)

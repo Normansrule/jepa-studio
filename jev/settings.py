@@ -52,6 +52,7 @@ DEFAULTS: dict = {
         "max_output_mb": 200,           # largest single file a code run may write (RLIMIT_FSIZE)
         "max_file_mb": 500,             # files bigger than this need approval (writing, importing)
         "max_workspace_mb": 2048,       # total size of one conversation's workspace (checked around every run)
+        "max_workspace_entries": 200000,  # files + folders in one workspace; more = over the limit
     },
     "network_allowed": False,           # True: sandboxed code may use the network without asking
     "approval_rules": {},               # {"<rule>": "run"|"ask"|"deny"} or {"tool:<name>": ...}; see policy.py
@@ -80,6 +81,7 @@ SCHEMA: dict = {
                 "max_output_mb": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 "max_file_mb": {"type": "integer", "minimum": 1, "maximum": 1048576},
                 "max_workspace_mb": {"type": "integer", "minimum": 16, "maximum": 1048576},
+                "max_workspace_entries": {"type": "integer", "minimum": 100, "maximum": 5000000},
             },
         },
         "network_allowed": {"type": "boolean"},
@@ -152,7 +154,7 @@ def private_dir(path: str | Path) -> Path:
     if os.name != "nt":
         try:
             if not p.is_symlink() and stat.S_IMODE(p.stat().st_mode) & 0o077:
-                os.chmod(p, 0o700)
+                os.chmod(p, 0o700)  # wsfs-ok: a jev-data folder (checked not a link above)
         except OSError:
             pass
     return p
@@ -166,7 +168,7 @@ def _write_private(path: Path, text: str) -> None:
         f.write(text)
     os.replace(tmp, path)  # wsfs-ok: jev-data/settings.json
     try:
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o600)  # wsfs-ok: jev-data/settings.json, just written above
     except OSError:
         pass
 

@@ -293,7 +293,7 @@ class JevApi:
             def work(job):
                 job.emit("start", model=name, action="import")
                 job.emit("progress", call_id=None, fraction=0.0, message="computing SHA-256")
-                digest = sha256_file(path)
+                digest = sha256_file(path)  # wsfs-ok: a GGUF you chose in a folder granted to JEPA Studio
                 job.emit("progress", call_id=None, fraction=0.3, message=f"sha256 {digest[:16]}..., uploading")
                 rt.llm().create_from_gguf(name, path, lambda d: job.emit("progress", call_id=None, fraction=None,
                                                                          message=d.get("status", "")),

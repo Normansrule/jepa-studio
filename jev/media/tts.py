@@ -227,7 +227,8 @@ def _run(cmd: list[str], timeout: float, work: Path, stdin: str | None = None, r
     mounts = Mounts(ro=[exe.parent, *[Path(p).resolve() for p in ro]])
     lim = RunLimits(cpu_seconds=int(timeout) + 30, memory_mb=max(sb.limits.memory_mb, 2048),
                     wall_seconds=int(timeout), max_output_mb=max(sb.limits.max_output_mb, 1024),
-                    max_file_mb=sb.limits.max_file_mb, max_workspace_mb=max(sb.limits.max_workspace_mb, 4096))
+                    max_file_mb=sb.limits.max_file_mb, max_workspace_mb=max(sb.limits.max_workspace_mb, 4096),
+                    max_workspace_entries=sb.limits.max_workspace_entries)
     res = sb.run(cmd, work, lim, network=False, stdin_text=stdin, mounts=mounts, honor_network_setting=False)
     if not res.ok:
         raise MediaError(f"{exe.name} failed: {res.summary(600)}")

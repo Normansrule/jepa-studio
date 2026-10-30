@@ -248,7 +248,7 @@ class Ollama:
         with open(p, "rb") as f:  # wsfs-ok: a GGUF file you chose (granted folder / CLI path), not a workspace
             if f.read(4) != b"GGUF":
                 raise OllamaError(f"{p.name} is not a GGUF file (missing GGUF magic bytes)")
-        digest = sha256 or sha256_file(p)
+        digest = sha256 or sha256_file(p)  # wsfs-ok: the GGUF checked above (your file, not a workspace)
         blob = f"/api/blobs/sha256:{digest}"
         try:
             self._open("HEAD", blob, timeout=10).close()

@@ -916,7 +916,8 @@ def test_settings_panel_validation_save_data_and_rules(browser):
     wait_until(page, lambda: "Nothing was deleted" in page.text_content("#set-data-status"), what="denied")
     page.check("#set-keep-audit", force=True)
     page.click("#set-delete")
-    assert ("POST", "/api/jev/data/delete", {"keep_audit_log": True}) in fake.calls
+    wait_until(page, lambda: ("POST", "/api/jev/data/delete", {"keep_audit_log": True}) in fake.calls,
+               what="delete request with the audit log kept")
     wait_until(page, lambda: dialog_open(page), what="delete-all dialog again")
     assert "and the audit log" not in page.text_content("#appr-what")
     approve_in_dialog(page, "Allow JEV to delete all of its data?")

@@ -62,7 +62,7 @@ def _finish_export(out: Path, prune_prefix: str | None = None, keep: int | None 
     named *.app.zip), only the newest `keep` of that same kind stay; exports you make yourself
     (`jev export`) are never deleted."""
     try:
-        os.chmod(out, 0o600)
+        os.chmod(out, 0o600)  # wsfs-ok: an export zip JEV just wrote in jev-data/exports
     except OSError:
         pass
     if prune_prefix:
@@ -144,7 +144,7 @@ class Store:
         for p in (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm")):
             try:
                 if p.exists():
-                    os.chmod(p, 0o600)
+                    os.chmod(p, 0o600)  # wsfs-ok: jev-data/jev.sqlite and its WAL files
             except OSError:
                 pass
 
@@ -275,8 +275,6 @@ class Store:
     def add_artifact(self, workspace: Path, path: Path, kind: str, mime: str, title: str = "", meta: dict | None = None,
                      conversation_id: str | None = None, turn_id: str | None = None, call_id: str | None = None,
                      sha256: str | None = None) -> dict:
-        from .llm import sha256_file
-
         ws = Path(workspace).resolve()
         p = Path(path).resolve()
         if ws not in p.parents or (self.workspace_root not in ws.parents and ws != self.workspace_root):
@@ -299,7 +297,7 @@ class Store:
         rel_ws = ws.relative_to(self.workspace_root).as_posix()
         self._x("INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (aid, conversation_id, turn_id, call_id, rel_ws, p.relative_to(ws).as_posix(), kind, mime,
-                 title or p.name, sha256 or sha256_file(p), p.stat().st_size, json.dumps(meta or {}, default=str),
+                 title or p.name, sha256, p.stat().st_size, json.dumps(meta or {}, default=str),
                  _now()))
         return self.get_artifact(aid)
 

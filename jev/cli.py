@@ -180,7 +180,7 @@ def cmd_models(args) -> int:
             if not yes:
                 return 1
             print("computing SHA-256 ...")
-            digest = sha256_file(p)
+            digest = sha256_file(p)  # wsfs-ok: a GGUF path you typed on the command line
             llm.create_from_gguf(args.as_name, p, lambda d: print("  " + d["status"]), sha256=digest)
             rt.store.record_model(args.as_name, str(p), digest, p.stat().st_size)
             print(f"imported {args.as_name}  sha256 {digest}")

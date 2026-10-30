@@ -9,12 +9,16 @@ Security (docs/SECURITY_MODEL.md, "malicious datasets"):
     (decoding stops there) and a re-check of every decoded frame's size
   * time series: CSV parsed as numbers only (no eval, no pickle); .npy loaded with
     allow_pickle=False
+  * every file is opened without following a final link and without blocking (O_NOFOLLOW |
+    O_NONBLOCK), and anything but a regular file (a FIFO, socket or device named *.png) is
+    refused, so a planted FIFO can never hang training or embedding
   * nothing here touches the network
 """
 from __future__ import annotations
 
 import csv
 import os
+import stat
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +47,35 @@ class UnsafeInput(ValueError):
     pass
 
 
+_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | \
+    getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
+
+
+def open_regular(path: Path, text: bool = False, **kw):
+    """Open a data file for reading: never follows a final symlink, never blocks on a FIFO, and
+    refuses anything that is not a regular file."""
+    try:
+        fd = os.open(path, _OPEN_FLAGS)
+    except FileNotFoundError:
+        raise
+    except OSError as e:        # ELOOP (a link), ENXIO (a socket), ...
+        raise UnsafeInput(f"{Path(path).name}: not a regular file or cannot be opened ({e.strerror})") from e
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafeInput(f"{Path(path).name}: not a regular file (FIFO, socket, device or folder)")
+        if hasattr(os, "set_blocking"):
+            os.set_blocking(fd, True)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "r" if text else "rb", **kw)
+
+
+def check_regular(path: Path) -> None:
+    """open_regular() for callers that hand the path to another program (FFmpeg)."""
+    open_regular(path).close()
+
+
 def safe_listing(root: str | Path, exts: set[str], max_items: int | None = None) -> list[Path]:
     root = Path(root).expanduser().resolve()
     if not root.is_dir():
@@ -66,7 +99,7 @@ def safe_listing(root: str | Path, exts: set[str], max_items: int | None = None)
 def load_image(path: Path, max_side: int) -> np.ndarray:
     if path.stat().st_size > MAX_FILE_BYTES:
         raise UnsafeInput(f"{path.name}: larger than {MAX_FILE_BYTES >> 20} MB")
-    with Image.open(path) as im:
+    with open_regular(path) as fh, Image.open(fh) as im:
         w, h = im.size
         if w * h > MAX_PIXELS:
             raise UnsafeInput(f"{path.name}: {w}x{h} exceeds pixel cap")
@@ -85,9 +118,10 @@ def clip_metadata(path: Path) -> dict:
       so the duration is estimated as frame count x the first frame's delay.
     * everything else: FFmpeg (imageio-ffmpeg) probes the container: size, fps, duration.
     """
+    check_regular(path)
     if path.suffix.lower() == ".gif":
         try:
-            with Image.open(path) as im:
+            with open_regular(path) as fh, Image.open(fh) as im:
                 w, h = im.size
                 n = int(getattr(im, "n_frames", 1))
                 delay_ms = float(im.info.get("duration") or 0)
@@ -170,14 +204,15 @@ def load_series(path: Path) -> np.ndarray:
     if path.stat().st_size > MAX_FILE_BYTES:
         raise UnsafeInput(f"{path.name}: larger than {MAX_FILE_BYTES >> 20} MB")
     if path.suffix.lower() == ".npy":
-        arr = np.load(path, allow_pickle=False)
+        with open_regular(path) as fh:
+            arr = np.load(fh, allow_pickle=False)
         if arr.size > MAX_SERIES_VALUES:
             raise UnsafeInput("series too large")
         arr = np.asarray(arr, dtype=np.float32)
         return arr[None] if arr.ndim == 1 else arr.T
     delim = "\t" if path.suffix.lower() == ".tsv" else ","
     rows: list[list[float]] = []
-    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+    with open_regular(path, text=True, newline="", encoding="utf-8", errors="replace") as f:
         for r in csv.reader(f, delimiter=delim):
             vals = []
             for x in r:

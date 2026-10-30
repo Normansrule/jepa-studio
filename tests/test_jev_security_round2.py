@@ -190,10 +190,17 @@ def test_n1_write_file_and_upload_never_follow_parent_links(tmp_path, home_victi
 
 # calls that do file-system I/O on a path; each one in jev/ must go through jev/wsfs.py
 OS_FUNCS = {"open", "replace", "rename", "symlink", "link", "unlink", "remove", "mkdir", "makedirs", "rmdir",
-            "mkfifo"}
+            "mkfifo", "chmod", "chown", "truncate"}
 SHUTIL_FUNCS = {"copy", "copy2", "copyfile", "copytree", "move", "rmtree"}
 PATH_METHODS = {"open", "read_text", "read_bytes", "write_text", "write_bytes", "mkdir", "unlink", "rmdir", "touch",
-                "symlink_to", "hardlink_to", "save", "savez", "savez_compressed", "savefig"}
+                "symlink_to", "hardlink_to", "save", "savez", "savez_compressed", "savefig", "chmod",
+                "get_writer", "imwrite", "mimwrite", "mimsave", "imsave", "get_reader", "imread"}
+# np.load / io.open / Path.rename / Path.replace (one argument: str.replace takes two)
+OWNER_FUNCS = {("np", "load"), ("numpy", "load"), ("io", "open"), ("torch", "load")}
+ONE_ARG_METHODS = {"rename", "replace"}
+# JEPA Studio functions that open files themselves: a workspace path must never reach them
+JEPA_IO = {"load_run_weights", "recorded_run_hash", "load_state_dict", "load_tensors", "sha256_file", "load_config",
+           "load_image", "safe_listing", "clip_metadata", "load_file", "Trainer", "import_legacy", "verify_files"}
 FILE_OBJECTS = {"fh", "f", "fo", "fi", "buf", "bio", "stream"}
 NOT_PATHS = {"wsfs", "W", "self", "store", "z", "zf", "io", "opener", "urllib", "request", "json", "re", "str", "dict"}
 
@@ -206,13 +213,17 @@ def _io_calls(path: Path):
             continue
         f = node.func
         if isinstance(f, ast.Name):
-            hit = f.id == "open"
+            hit = f.id == "open" or f.id in JEPA_IO
         elif isinstance(f, ast.Attribute):
             owner = f.value.id if isinstance(f.value, ast.Name) else getattr(f.value, "attr", "")
-            if owner in NOT_PATHS:
+            if (owner, f.attr) in OWNER_FUNCS:
+                hit = True
+            elif owner in NOT_PATHS:
                 continue
-            hit = (owner == "os" and f.attr in OS_FUNCS) or (owner == "shutil" and f.attr in SHUTIL_FUNCS) or \
-                (owner not in ("os", "shutil") and f.attr in PATH_METHODS)
+            else:
+                hit = (owner == "os" and f.attr in OS_FUNCS) or (owner == "shutil" and f.attr in SHUTIL_FUNCS) or \
+                    (owner not in ("os", "shutil") and f.attr in PATH_METHODS) or f.attr in JEPA_IO or \
+                    (owner not in ("os", "shutil") and f.attr in ONE_ARG_METHODS and len(node.args) == 1)
         else:
             hit = False
         if not hit:
