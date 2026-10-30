@@ -7,7 +7,7 @@ agent may do on its own, see [SAFETY.md](SAFETY.md).
 
 | Tab | Web (GitHub Pages) | Desktop app |
 |---|---|---|
-| **JEV** | A panel that says JEV needs the desktop app, links to the release downloads, lists what JEV can do and the three risk levels, and sends you to Science | Chat with streaming answers, tool cards, approvals, files, status strip and Doctor |
+| **JEV** | A panel that says JEV needs the desktop app, links to the release downloads, lists what JEV can do and the three risk levels, and sends you to Science | Chat with streaming answers, tool cards, approvals and the audit log, files, status strip, Models, Settings and Doctor |
 | **Science** | Live black hole and simulations (WebGL) | The same, plus "Render on this computer": an MP4 rendered by the backend, with progress |
 
 The tab bar puts JEV and Science first, then a divider, then the JEPA workflow (Data, Train,
@@ -25,6 +25,9 @@ The JEPA progress stepper is hidden on JEV and Science.
 | `site/js/jev/approvals.js` | the approval dialog, the "N waiting" badges, the Approvals panel (pending + audit history) |
 | `site/js/jev/gallery.js` | the per-conversation Files list and the image lightbox |
 | `site/js/jev/doctor.js` | the status strip and the Doctor view (checks and per-OS commands) |
+| `site/js/jev/models.js` | the Models panel: installed models, default, delete, download with examples sized by GPU memory, GGUF import |
+| `site/js/jev/settings.js` | the Settings panel: settings form with validation, sandbox facts, data paths, export / delete all, approval rules |
+| `site/js/jev/audit.js` | audit-log filters (decision, tool, dates) and the CSV export used by the Approvals panel |
 | `site/js/jev/highlight.js` | the small in-house code highlighter and answer formatting (no HTML parsing) |
 | `site/js/jev/icons.js` | inline SVG icons and the risk badge |
 | `site/js/tabs/science.js` | the Science tab; loads `site/js/science/blackhole.js` and `sims.js` on demand |
@@ -44,14 +47,16 @@ Routes the UI uses (all in [api.md](api.md)):
 | Chat | `POST /chat`, then `GET /turns/<id>/events?since=n` every 200 ms (900 ms while an approval is pending) until `done`, `error` or `cancelled`; `POST /turns/<id>/cancel` for Stop |
 | Conversations | `GET /conversations`, `GET /conversations/<id>`, `POST /conversations` (an empty one, before the first upload), `DELETE /conversations/<id>` (answered with an approval), `GET /conversations/<id>/export` |
 | Attachments | `POST /conversations/<id>/files` with `{name, mime, data_base64}`; files over 1.5 MB are refused in the page, because the base64 body must stay under the 2 MB cap. The returned `path` goes into `attachments` of the next `POST /chat` |
-| Approvals | `GET /approvals?status=pending` every 3 s while visible, `GET /approvals` for the history, `POST /approvals/<id>` with `{decision, remember}` |
-| Models | `POST /models/pull` (answered with an approval); after "Approve", the `job_id` in the decision's response is followed with `GET /jobs/<id>/events` |
+| Approvals | `GET /approvals?status=pending` every 3 s while visible, `GET /approvals?limit=5000` for the history (audit log), `POST /approvals/<id>` with `{decision, remember}` |
+| Models | `GET /models` (installed + imported SHA-256s), `POST /settings {default_model}`, `POST /models/pull`, `POST /models/import {gguf_path, name}` (the path comes from the shell's `pick_gguf_file`), `DELETE /models/<name>`; the last three answer with an approval, and after "Approve" the `job_id` in the decision's response is followed with `GET /jobs/<id>/events` |
+| Settings | `GET /settings` (settings, `rules`, `paths`), `POST /settings` with only the changed keys, `GET /export` (a zip, saved with a normal download), `POST /data/delete {keep_audit_log}` (answered with an approval); sandbox facts come from `GET /status` |
 | Files | `GET /artifacts/<id>` with the token header, shown through a `blob:` URL |
 | Science renders | `POST /science/blackhole`, `POST /science/simulate`, then `GET /jobs/<id>/events`; a long render answers with an approval first |
 
 The approval decision's response carries `job_id` when approving starts a job (model downloads,
-long renders), so the page can follow its progress. Without it, the page falls back to polling
-`GET /models` until the new model appears.
+imports, deletes, long renders), so the page can follow its progress. If the approval table is
+set to `run` for that row, the request itself answers `{status: "auto_run", job_id}` and the page
+follows the job directly.
 
 ## Streaming without flooding screen readers
 
@@ -110,6 +115,64 @@ instead of "Approved".
 waiting") and on the Approvals button, until every request is answered. The **Approvals** panel
 lists pending requests (each with Review) and the audit history: time, tool, the exact command or
 path, and the decision with an icon and a word (Approved, Denied, Ran automatically, Expired, …).
+
+## Models panel
+
+**Models** (in the status strip, or **Manage models** next to the model menu) opens a sheet with:
+
+* **Installed**: one row per Ollama model with its size, parameter count, quantization, family
+  and the first 12 characters of Ollama's digest (the full digest is the tooltip); a GGUF you
+  imported also shows the SHA-256 JEV recorded for the file. **Make default** saves
+  `default_model` and selects it in the composer; **Delete…** asks (the dialog names the model).
+* **Download a model**: a name field and **Request download** (asks, then a progress bar).
+  Below it, *examples* that fit this computer: the tier for the largest GPU memory in
+  `status.gpu.devices` (CPU only or under 6 GB, 6 to 11, 12 to 23, 24 GB and more; an Apple GPU
+  counts as the 6 to 11 tier) and the next smaller tier, each with its approximate download
+  size, whether it is already installed, and a note on models without native tool calling.
+  Clicking one only fills the name; nothing downloads without the approval.
+* **Import a GGUF file**: **Choose a .gguf file…** calls the shell's `pick_gguf_file`. The page
+  never supplies a path: the native dialog returns one, and the shell has already granted the
+  backend that single file after checking its name and `GGUF` header. The panel proposes a
+  name from the file name (lowercase, other characters as `-`), validates it like the backend
+  (`MODEL_NAME`), and **Request import** asks. When the job finishes the recorded SHA-256 is
+  shown. Without the shell (no `window.__TAURI__`), the button is disabled and the reason gives
+  the `jev models import` command.
+* **Where the model files are**: Ollama's default folder per OS and how to move it with
+  `OLLAMA_MODELS`.
+
+## Settings panel
+
+**Settings** opens a form for the keys the API may change, each validated in the page with
+the backend's bounds before **Save settings** is enabled (errors are next to the field, linked
+with `aria-describedby`, and the field gets `aria-invalid`); only changed keys are sent:
+
+* default model (the installed models, plus the current value if it is not installed);
+* Ollama address: must be loopback (`127.0.0.0/8`, `::1`, `localhost`). Another address needs
+  **Allow an Ollama on another machine**, which shows a warning that prompts and files would
+  leave the computer, and is still refused while `allow_remote_ollama` is off in the file (the
+  message names the settings file): the page cannot turn that switch on;
+* the five sandbox limits (`cpu_seconds`, `wall_seconds`, `memory_mb`, `max_output_mb`,
+  `max_file_mb`), whole numbers within `jev/settings.py`'s bounds;
+* `network_allowed`, explained: it lifts the sandbox's network block and skips that one
+  question, while downloads, installs, shell commands, sending data and deleting still ask.
+
+Below the form, read only: what the sandbox enforces here (network and file isolation, method,
+resource limits, how runaway code is stopped, from `status.sandbox`); **Your data**, the paths of
+the data folder, database, settings file, workspaces and exports with Copy buttons (the shell
+has no command to open folders, on purpose), **Export all data (.zip)** and **Delete all data…**
+(asks; "Keep the audit log" is a checkbox); the approval table (rule, what it covers, the
+current action with an icon and a word, the default when you changed it, Locked rows); and the
+settings only the file can change.
+
+## Audit log
+
+The Approvals panel's **History (audit log)** loads up to 5 000 decisions and filters them in
+the page by decision (Approved by you, Denied by you, Ran automatically, Refused by policy,
+Waiting, Expired / cancelled / failed), tool and a date range (local days, inclusive), with a
+count ("2 of 5 decisions"). **Export CSV** saves the filtered rows with every field (ids, ISO
+times, status, decided_by, rules, reason, arguments as JSON); a cell that would start with `=`,
+`+`, `-` or `@` gets a leading `'` so a spreadsheet never runs it as a formula. Below 620 px
+each row stacks: time and decision, tool, then what it did.
 
 ## Files (artifacts)
 
@@ -194,4 +257,9 @@ scripted turn (tokens, a sandbox tool with an image, an `approval_request` for `
 approval by keyboard, an MP4), Esc to deny a second request, the history, Doctor with Ollama down,
 the phone drawer, 44 px targets and no horizontal scroll at 375 px, attachments, a saved
 conversation, the web tier panel, the Science tab live or in fallback, and a desktop render job.
+The Models, Settings and audit-log tests cover listing, make-default, delete, pull and GGUF import
+(with `__TAURI__.core.invoke('pick_gguf_file')` stubbed) through the approval dialog; settings
+validation, the remote-address warning, saving only changed keys, export and delete-all; the
+audit filters and CSV; and the three panels at 375 px in light and dark (no horizontal scroll,
+44 px targets).
 `tests/test_desktop_tier.py` also opens the JEV tab against the real backend.

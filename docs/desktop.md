@@ -18,7 +18,7 @@ JEV itself (models, tools, sandbox, approvals) is described in [jev/README.md](j
 flowchart LR
   subgraph shell["Tauri shell (Rust, desktop/src-tauri)"]
     boot["boot thread<br/>setup.rs · backend.rs"]
-    cmds["commands<br/>pick_data_folder · backend_status"]
+    cmds["commands<br/>pick_data_folder · pick_gguf_file · backend_status"]
     dlg["native folder dialog"]
     olw["Ollama watcher<br/>ollama.rs"]
   end
@@ -165,13 +165,17 @@ local port with a secret, and ask the shell for exactly two things.
   native dialog from Rust, canonicalizes the chosen folder (symlinks and `..` resolved),
   refuses names with line breaks or surrounding spaces (they could forge extra lines), and
   appends it once to `allowed-folders.txt`. The backend re-reads that file per request and
-  refuses any `data.path` outside the granted folders (HTTP 403).
+  refuses any `data.path` outside the granted folders (HTTP 403). `pick_gguf_file` (JEV >
+  Models > Import) does the same for one file: a native file dialog filtered to `.gguf`, then
+  the choice must be a regular file named `*.gguf` starting with the `GGUF` magic bytes, and
+  only that file's canonical path is appended (a file line grants that path alone, nothing
+  next to it). Importing it into Ollama is a separate backend action that asks for approval.
 * **No file system, shell or HTTP plugins.** The shell registers only `tauri-plugin-dialog`, and
   its JavaScript API is not granted either (the Rust side opens the dialog). The dialog crate
   links `tauri-plugin-fs` for a path type, but the fs plugin is never registered, so its
   commands do not exist. `assetProtocol` is off.
 * **Capabilities** (`desktop/src-tauri/capabilities/`): the main window gets
-  `allow-pick-data-folder` and `allow-backend-status`; the setup window gets
+  `allow-pick-data-folder`, `allow-pick-gguf-file` and `allow-backend-status`; the setup window gets
   `core:event:allow-listen`, `core:event:allow-unlisten` and `allow-backend-status`. Nothing
   else, not even `core:default`.
 * **Content Security Policy (CSP).** The main window's policy comes from
@@ -194,7 +198,7 @@ local port with a secret, and ask the shell for exactly two things.
 
 ## Calling the shell from the site
 
-`app.withGlobalTauri` is on, so the site can call the two commands without a bundler. Both
+`app.withGlobalTauri` is on, so the site can call the three commands without a bundler. They
 exist only in the desktop tier; check `detectTier() === 'desktop'` (or `window.__TAURI__`)
 first.
 
@@ -203,6 +207,11 @@ first.
 // (a string; use it as config.data.path) or null if they cancelled. Rejects with a message
 // string if the folder cannot be granted.
 const folder = await window.__TAURI__.core.invoke('pick_data_folder');
+
+// Opens the native file picker for a GGUF model. Resolves to the canonical path of the chosen
+// file (now readable by the backend, that file only) or null if cancelled. Rejects with a
+// message string if it is not a .gguf file with the GGUF magic bytes.
+const gguf = await window.__TAURI__.core.invoke('pick_gguf_file');
 
 // Resolves to {phase, message, progress, line, error, port, accelerator, torchIndex, python, logDir,
 //              ollama: {reachable, url, version, error} | null}
@@ -217,7 +226,8 @@ The web tier keeps its `<input type="file">` path. `tests/test_desktop_tier.py` 
 flow in a headless browser against the real backend (with `invoke` stubbed), including a
 refused folder that was never granted.
 
-The JEV tab's Doctor calls `backend_status` too, for the shell's own Ollama probe.
+The JEV tab's Doctor calls `backend_status` too, for the shell's own Ollama probe, and its
+Models panel calls `pick_gguf_file` before `POST /api/jev/models/import`.
 
 The in-app assistant searches the docs bundled with the app: `bundle.resources` copies `docs/`
 and `README.md` to `python/docs` and `python/README.md`, and the shell passes

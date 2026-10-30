@@ -114,8 +114,11 @@ ollama pull qwen2.5-coder:7b     # JEV's default: strong at code, native tool ca
 ollama pull llama3.1:8b          # good general assistant, native tool calls
 ```
 
-(`jev models pull NAME` does the same and records the decision in JEV's audit log; in the app,
-JEV > Models > Pull asks for approval first because it uses the network.)
+(`jev models pull NAME` does the same and records the decision in JEV's audit log. In the app,
+open JEV > Models: type a name or pick one of the examples sized for the GPU the backend found,
+and Request download; it asks for approval first because it uses the network, then shows the
+progress. The same panel lists what is installed (size, parameters, quantization, family,
+digest), sets the default model, and deletes a model, which also asks.)
 
 Which model fits your machine? A 4-bit (Q4_K_M, Ollama's default) model needs about
 0.6 GB per billion parameters, plus 1 to 2 GB for the context:
@@ -133,8 +136,10 @@ for JEV; models without native tool support still work through the JSON protocol
 more mistakes. Model names ending in `-cloud` run on ollama.com, not on your machine, so JEV
 refuses them unless you set `"allow_cloud_models": true`.
 
-**Your own GGUF file**: `jev models import ./my-model.gguf --name my-model` (or JEV > Models >
-Import in the app, for a file inside a folder you granted). JEV checks the GGUF magic bytes,
+**Your own GGUF file**: `jev models import ./my-model.gguf --name my-model`, or in the app
+JEV > Models > Import a GGUF file: "Choose a .gguf file…" opens the system file dialog, which
+grants JEV that one file (the page itself never names a path), then Request import asks for
+approval. The panel shows the recorded SHA-256 when it finishes. JEV checks the GGUF magic bytes,
 computes and records the file's SHA-256, uploads it to Ollama's blob store and registers it,
 the same as `ollama create my-model -f Modelfile` with `FROM /abs/path/my-model.gguf`.
 
@@ -157,7 +162,8 @@ To keep them on a drive you choose, set `OLLAMA_MODELS` before Ollama starts:
   user (`sudo chown -R ollama:ollama /data/ollama-models`), `sudo systemctl restart ollama`.
 
 The folder holds `blobs/` (the weights, named by SHA-256) and `manifests/`. Copying the whole
-folder to another machine copies your models.
+folder to another machine copies your models. JEV > Models shows this table and the
+`OLLAMA_MODELS` steps too.
 
 ### 4. Install JEV and check everything
 
@@ -178,6 +184,9 @@ Node.js and a GPU were found. It exits non-zero until Ollama and the default mod
 * **Terminal**: `jev chat "make a plot of sin(x) from 0 to 2 pi"` for one turn, or `jev chat` for a
   conversation; approvals are asked as `Approve? [y = yes, s = yes for this session, N = no]`.
 * **Backend only**: `jev serve` (same as `jepa-studio serve`) and use the [HTTP API](api.md).
+
+In the app, the Approvals panel's History is the same audit log, filterable by decision, tool
+and date and exportable as CSV.
 
 Useful commands: `jev models list`, `jev audit` (every decision, newest last), `jev export
 <conversation_id>` (a zip with the conversation and its files).
@@ -206,9 +215,13 @@ optional:
 
 Environment variables override the file for one session: `JEV_OLLAMA_URL`, `JEV_DEFAULT_MODEL`,
 `JEV_WORKSPACE_ROOT`, `JEV_NETWORK_ALLOWED=1`, `JEV_ALLOW_REMOTE_OLLAMA=1`, and `JEV_ROOT` for
-the `jev` command. The app's settings panel can change the default model, the limits,
-`network_allowed` and a loopback `ollama_url`; the approval rules and the remote/cloud opt-ins
-can only be changed in the file, so neither a web page nor the model can loosen them.
+the `jev` command. The app's JEV > Settings panel can change the default model, the limits
+(checked against the bounds above before saving), `network_allowed` and a loopback
+`ollama_url`; a remote address needs the "Allow an Ollama on another machine" box (with a
+warning) *and* `"allow_remote_ollama": true` in the file. The approval rules and the
+remote/cloud opt-ins can only be changed in the file, so neither a web page nor the model can
+loosen them; the panel shows them read-only, together with what the sandbox enforces on this
+computer and where the database, settings and workspaces are.
 
 ## Running fully offline
 
@@ -222,6 +235,9 @@ command-line `ollama serve` if you want zero outbound connections.
 ## Deleting everything
 
 * one conversation: delete it in the app (asks) or remove `jev-data/workspaces/<id>/`;
-* all of JEV's data: delete the `jev-data/` folder;
+* everything at once from the app: JEV > Settings > Your data > Delete all data (asks; keeps
+  `settings.json` and, if you tick it, the audit log). Export all data first gives you a zip of
+  every conversation, file and audit row;
+* all of JEV's data including settings: delete the `jev-data/` folder;
 * models: `jev models rm NAME` / `ollama rm NAME`, or delete Ollama's models folder;
 * JEV itself: `pip uninstall jepa-studio`.
