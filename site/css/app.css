@@ -702,7 +702,7 @@ figure.bare { margin: 0; }
 .jev-web-side h3 + ul { margin-bottom: var(--sp-5); }
 .can-list, .risk-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); color: var(--ink-2); }
 .can-list b { color: var(--ink); font-weight: 600; }
-.risk-legend li { display: grid; grid-template-columns: 7.2em minmax(0, 1fr); gap: var(--sp-2); align-items: baseline; font-size: var(--step--1); }
+.risk-legend li { display: grid; grid-template-columns: 8.4em minmax(0, 1fr); gap: var(--sp-2); align-items: baseline; font-size: var(--step--1); }
 .risk-legend .risk { justify-self: start; }
 @media (max-width: 860px) { .jev-web { grid-template-columns: minmax(0, 1fr); gap: var(--sp-5); } .jev-web-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: var(--sp-4); } }
 
@@ -956,7 +956,7 @@ dialog::backdrop { background: rgb(9 12 20 / 0.62); }
 #sci-status { min-height: 1em; }
 
 /* ================================================================== landing (v0.4) */
-.landing .hero-jev h1 { max-width: 12ch; }
+.landing .hero-jev h1 { max-width: 14ch; font-size: clamp(2.3rem, 5vw, 3.6rem); }
 .transcript { border: 1px solid var(--line); border-radius: var(--r-m); background: var(--surface); padding: var(--sp-4) var(--sp-4) var(--sp-3); display: grid; gap: var(--sp-3); }
 .transcript .t-you { background: var(--surface-2); border-radius: var(--r-m); padding: var(--sp-2) var(--sp-3); margin: 0; }
 .transcript .who { margin-bottom: 2px; }
@@ -984,3 +984,4 @@ dialog::backdrop { background: rgb(9 12 20 / 0.62); }
 .explain-cols.stacked { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
 .explain-cols.stacked p { margin: 0; }
 @media (max-width: 860px) { .jepa-grid { grid-template-columns: minmax(0, 1fr); } }
+.jev-export { margin-left: auto; flex: none; }

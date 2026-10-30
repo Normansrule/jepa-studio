@@ -5,7 +5,7 @@
 //   approvals.js  the approval dialog, "N waiting" badge, pending list and audit history
 //   gallery.js    per-conversation files (images + lightbox, video, audio, code, downloads)
 //   doctor.js     status strip and the Doctor view (fixes, per-OS commands)
-import { $, $$, el, clear } from '../ui/dom.js';
+import { $, $$, el, clear, download } from '../ui/dom.js';
 import { getPref, setPref } from '../ui/prefs.js';
 import { collectDropped } from '../ui/dropzone.js';
 import { JevClient, follow, fmtBytes, MAX_UPLOAD_BYTES } from '../jev/client.js';
@@ -185,7 +185,9 @@ function decided(a, decision, r) {
     const bar = $('#jev-pull-bar');
     bar.hidden = false;
     follow((since) => client.jobEvents(r.job_id, since), (ev) => {
-      if (ev.event === 'progress') {
+      if (ev.event === 'progress' && (ev.fraction === null || ev.fraction === undefined)) {
+        if (ev.message) st.textContent = `Downloading ${name}: ${ev.message}`;
+      } else if (ev.event === 'progress') {
         const pct = Math.round((Number(ev.fraction) || 0) * 100);
         bar.firstChild.style.width = `${pct}%`;
         bar.setAttribute('aria-valuenow', String(pct));
@@ -214,6 +216,13 @@ function decided(a, decision, r) {
 // ------------------------------------------------------------------ conversations
 function bindConversations() {
   $('#jev-new').addEventListener('click', newConversation);
+  $('#jev-export').addEventListener('click', async () => {
+    if (!convId) return;
+    try {
+      download(`jev-conversation-${convId}.zip`, await client.exportConversation(convId), 'application/zip');
+      app.notify('good', 'Conversation exported', 'A zip with the messages, tool calls, approvals and files.');
+    } catch (e) { app.notify('bad', 'Could not export the conversation', String(e.message || e)); }
+  });
   $('#jev-new-2').addEventListener('click', () => { $('#jev-convs-dialog').close(); newConversation(); });
   const dlg = $('#jev-convs-dialog');
   $('#jev-convs-toggle').addEventListener('click', () => { dlg.showModal(); const cur = dlg.querySelector('[aria-current="true"]') || dlg.querySelector('button'); if (cur) cur.focus(); });
@@ -226,6 +235,7 @@ let convCache = [];
 async function loadConversations() {
   try { convCache = (await client.conversations()).conversations || []; } catch { convCache = []; }
   const cur = convCache.find((c) => c.id === convId);
+  $('#jev-export').hidden = !convId;
   if (cur && cur.title) $('#jev-conv-title').textContent = cur.title;
   renderConversationLists();
 }
@@ -273,6 +283,7 @@ function newConversation() {
   convId = null;
   resetLog();
   $('#jev-conv-title').textContent = 'New conversation';
+  $('#jev-export').hidden = true;
   renderConversationLists();
   $('#jev-input').focus();
 }
@@ -284,23 +295,35 @@ async function openConversation(id) {
   let c;
   try { c = await client.conversation(id); } catch (e) { app.notify('bad', 'Could not open the conversation', String(e.message || e)); return; }
   $('#jev-conv-title').textContent = c.title || 'Untitled';
+  $('#jev-export').hidden = false;
   $('#jev-starters').hidden = (c.messages || []).length > 0;
   const log = $('#jev-log');
-  const results = new Map();
-  for (const m of c.messages || []) if (m.role === 'tool') results.set(m.tool_call_id || m.call_id || m.name, m);
+  // Stored messages (jev/store.py): {role, content, tool_calls (JSON), tool_name}. A tool message
+  // answers the oldest tool call still waiting for its result.
+  const waiting = [];
   for (const m of c.messages || []) {
     if (m.role === 'user') log.append(userMessage(String(m.content || ''), (m.attachments || []).map((p) => ({ path: p }))));
     else if (m.role === 'assistant') {
       const body = el('div', { class: 'msg-body' });
       if (m.content) body.append(el('div', { class: 'seg-text' }, renderAnswer(m.content)));
-      for (const tc of m.tool_calls || []) {
+      let calls = m.tool_calls;
+      if (typeof calls === 'string') { try { calls = JSON.parse(calls); } catch { calls = []; } }
+      for (const tc of Array.isArray(calls) ? calls : []) {
         const fn = tc.function || tc;
-        const res = results.get(tc.id || tc.call_id) || null;
         let args = fn.arguments;
         if (typeof args === 'string') { try { args = JSON.parse(args); } catch { /* keep the string */ } }
-        body.append(toolCard({ name: fn.name, risk: tc.risk || 'read', args, state: res && res.ok === false ? 'failed' : 'done', result: res ? String(res.content || '') : '', client }));
+        const card = toolCard({ name: fn.name, risk: tc.risk || 'read', args, state: 'done', client });
+        waiting.push(card);
+        body.append(card);
       }
       if (body.childNodes.length) log.append(el('article', { class: 'msg msg-jev' }, el('h4', { class: 'who' }, el('span', { text: 'JEV' }), el('span', { class: 'hint who-model', text: m.model || '' })), body));
+    } else if (m.role === 'tool') {
+      const card = waiting.shift();
+      if (card && m.content) {
+        const box = card.querySelector('.tc-result');
+        box.hidden = false;
+        box.append(el('pre', { class: 'tc-out', attrs: { tabindex: '0' }, text: String(m.content).slice(0, 6000) }));
+      }
     }
   }
   log.scrollTop = log.scrollHeight;

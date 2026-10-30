@@ -1,107 +1,148 @@
 <p align="center">
-  <img src="assets/hero.gif" alt="jepa-studio in four steps, starting from a folder of unlabeled images" width="720">
+  <img src="assets/science/blackhole_still.png" alt="A spinning (Kerr) black hole with its lensed accretion disk, ray-traced by JEV on a laptop: the far side of the disk bends over the shadow, the approaching side glows brighter and bluer" width="760">
 </p>
 
-# jepa-studio
+# JEV Studio
 
-**Pretrain, inspect and use LeJEPA models on your own unlabeled images, video or time series,
-then drive a planning bot inside a learned latent world model.** See it, run it, trust it.
+**A local AI agent + JEPA models, on your own computer.** JEV answers questions, writes and runs
+code, makes images and narrated videos, and simulates physics (the black hole above is one of its
+renders), with language models served by your own [Ollama](https://ollama.com). Code runs in a
+sandbox folder; anything beyond it stops and asks you. The same app pretrains, inspects and uses
+LeJEPA self-supervised models on your unlabeled images, video or time series.
 
-[![CI](https://github.com/Normansrule/jepa-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Normansrule/jepa-studio/actions/workflows/ci.yml)
-[![Pages](https://github.com/Normansrule/jepa-studio/actions/workflows/pages.yml/badge.svg)](https://github.com/Normansrule/jepa-studio/actions/workflows/pages.yml)
+[![CI](https://github.com/Normansrule/jev-jepa-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Normansrule/jev-jepa-studio/actions/workflows/ci.yml)
+[![Pages](https://github.com/Normansrule/jev-jepa-studio/actions/workflows/pages.yml/badge.svg)](https://github.com/Normansrule/jev-jepa-studio/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Normansrule/jepa-studio/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Normansrule/jepa-studio)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Normansrule/jev-jepa-studio/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Normansrule/jev-jepa-studio)
 
-LeJEPA is a Joint-Embedding Predictive Architecture (JEPA) trained with Sketched Isotropic
-Gaussian Regularization (SIGReg): one loss, one knob, no teacher network, no tricks
-([Balestriero & LeCun, 2025](https://arxiv.org/abs/2511.08544)). jepa-studio wraps it in an app
-that shows every step (views, loss terms, embedding cloud, collapse check, probes, planning),
-runs on whatever machine you have, and writes down every number and decision so you can check
-them.
-
-### ▶ [Try it in your browser](https://normansrule.github.io/jepa-studio/app.html)
-
-No install, nothing uploaded: a small LeJEPA model trains inside the tab
-([what the web demo does](docs/web-demo.md)). For real models on your own files, use the Python
-package or the desktop app ([docs/desktop.md](docs/desktop.md)).
+**[Download the desktop app](https://github.com/Normansrule/jev-jepa-studio/releases/latest)**
+(Windows, macOS, Linux) ·
+**[Try it in your browser](https://normansrule.github.io/jev-jepa-studio/app.html)** (the black
+hole, the simulations and the JEPA demo run in the tab; JEV itself needs the desktop app)
 
 ---
 
-## Quickstart (Python)
+## What JEV does
 
-Python ≥ 3.10. PyTorch comes from PyPI; for a CPU-only machine you can install the smaller CPU
-build first with `pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu`.
+| | What you ask | What JEV does, locally |
+|---|---|---|
+| **Answer** | "Explain this paper", "What does this CSV say?" | reads the files you attach and quotes them; file contents are treated as data, never as instructions |
+| **Code** | "Write and run code that fits this curve" | writes Python or Node.js, runs it in the conversation's sandbox folder with time and memory limits, reads the output, fixes errors |
+| **Images** | "Plot …", "Make slides about …" | charts, diagrams, slides (Pillow, matplotlib), and image models you install yourself |
+| **Video** | "Make a narrated video about …", "Find the best moments in my footage" | narrated explainers with local text-to-speech, highlight reels cut from your own clips (FFmpeg); [docs/jev/media.md](docs/jev/media.md) |
+| **Physics** | "Render a spinning black hole", "Simulate a double pendulum" | a ray-traced Kerr black hole with Doppler beaming, N-body gravity, chaotic pendulums, waves, orbits; stills and MP4 |
+
+Every tool call appears in the chat as a card with its risk level, its arguments, live progress,
+the result and the files it made; the files collect in the conversation's gallery.
+
+![The JEV tab: a turn with a sandboxed render, an approved shell command, the files it made](assets/screens/tab-jev.png)
+
+## The safety model, in short
+
+* **Local only.** The model runs in Ollama on `127.0.0.1`; the backend listens on `127.0.0.1`
+  with a per-session token. No telemetry, no hosted service, no account.
+* **Three risk levels, decided by the backend, not the model.** *Read only* tools (answering,
+  maths, listing the workspace) and *Sandbox* tools (writing and running code inside the
+  conversation's folder, offline where the OS allows, with CPU, memory, time and output limits)
+  run on their own. Everything else *asks first*: the network, files outside the workspace,
+  shell commands, installing packages, downloading or deleting models, deleting conversations,
+  long GPU jobs.
+* **The approval safety net.** A focused dialog says what will happen, why it needs permission
+  and the exact command, path or model, with Approve once, Approve for this session, or Deny
+  (Esc). Session approvals are forgotten when the app closes. Unanswered requests are denied after
+  30 minutes.
+* **An audit log.** Every decision, including the automatic ones, is written to a local SQLite
+  log you can read in the app (Approvals) or with `jev audit`.
+* **Honest limits.** How strong the sandbox is depends on your operating system (for example,
+  network isolation needs bubblewrap or unshare on Linux). [docs/jev/SAFETY.md](docs/jev/SAFETY.md)
+  lists what each OS enforces, what is not enforced, and the test behind each claim.
+
+![The approval dialog for a shell command](assets/screens/jev-approval.png)
+
+## Install
+
+1. **Ollama** (free, runs the language models): download it from
+   <https://ollama.com/download>, or `brew install ollama` (macOS), `winget install Ollama.Ollama`
+   (Windows), `curl -fsSL https://ollama.com/install.sh | sh` (Linux; read the script first if you
+   like).
+2. **A model** that can call tools: `ollama pull qwen2.5-coder:7b` (JEV's default, about 4.7 GB).
+   Without a GPU, a 3B model such as `llama3.2:3b` (about 2 GB) is faster, at some cost in
+   tool-calling quality. The table in
+   [docs/jev/README.md](docs/jev/README.md#2-download-a-model) matches models to memory.
+3. **The desktop app** from [Releases](https://github.com/Normansrule/jev-jepa-studio/releases/latest)
+   (verify it against `SHA256SUMS.txt`). The first launch builds a private Python environment with
+   PyTorch (a few GB); later launches take seconds. The setup window and the JEV tab's **Doctor**
+   say whether Ollama is running and show the commands that fix what is missing.
+   Details: [docs/desktop.md](docs/desktop.md).
+
+From source instead (Python 3.10+):
 
 ```bash
-git clone https://github.com/Normansrule/jepa-studio && cd jepa-studio
+git clone https://github.com/Normansrule/jev-jepa-studio && cd jev-jepa-studio
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -e .                                      # extras: ".[video]", ".[assistant]", ".[dev]"
-
-jepa-studio doctor                                    # check the install
-jepa-studio hardware                                  # hardware card + the settings it would pick
-jepa-studio train --name shapes --epochs 2 --run-dir runs/my-shapes --eval
-jepa-studio inspect --run-dir runs/my-shapes          # isotropy + collapse verdict
-jepa-studio export  --run-dir runs/my-shapes          # HTML report + reproducibility bundle
-jepa-studio world   --env two-room --out runs/my-two-room   # train a world model + planning bot
-jepa-studio ask "why does SIGReg prevent collapse"    # search the docs (extractive answers)
+pip install -e ".[jev]"                               # JEPA tools + JEV; extras: video, assistant, dev
+jev doctor                                            # Ollama, models, sandbox, ffmpeg, GPU
+jev chat "make a plot of sin(x) from 0 to 2 pi"       # one turn in the terminal
+jepa-studio serve                                     # the app's backend on 127.0.0.1
 ```
 
-The built-in dataset ("Shapes": 10 procedurally drawn classes) needs no download. For your own
-data: `jepa-studio train --kind images --data ~/photos --name photos` (see [docs/data.md](docs/data.md)).
+## Science
 
-Every command (`jepa-studio <command> --help`):
+The **Science** tab draws a black hole you can orbit (spin, distance, viewing angle, the disk,
+Doppler colour and beaming) and three simulations (N-body gravity, a double pendulum, waves on a
+membrane) live on your graphics card with WebGL, in the desktop app and on the website. The
+desktop app can also render them on your computer as high-quality MP4 videos with a physically
+based Kerr ray tracer; the physics and its approximations are written up in
+[docs/jev/science.md](docs/jev/science.md).
 
-| Command | What it does |
-|---|---|
-| `hardware` | benchmark this machine and show recommended settings (`--json`, `--no-disk`) |
-| `train` | LeJEPA pretraining (`--config`, `--data`, `--kind`, `--name`, `--epochs`, `--mode`, `--run-dir`, `--runs`, `--fresh`, `--eval`) |
-| `eval` | linear probe + k-nearest-neighbor (kNN) + baselines for a run |
-| `inspect` | isotropy and collapse report |
-| `bench` | measure samples/s as each automatic optimization is switched on |
-| `world` | train a world model and evaluate the planning bot (`--env two-room\|push-block`) |
-| `serve` | local backend for the desktop app (127.0.0.1 only) |
-| `export` | run report + reproducibility bundle (`--onnx` also writes `encoder.onnx` for image encoders) |
-| `verify-bundle` | check an unpacked bundle against its manifest |
-| `keygen`, `sign-weights`, `verify-weights` | Ed25519-signed SHA-256 manifests for weight folders |
-| `import-legacy` | convert a `.pt`/`.pth` to safetensors (weights-only, explicit) |
-| `ask` | ask the docs (retrieval; optional local model) |
-| `doctor` | check the installation |
-
-## The seven tabs
-
-The web app and the desktop app share one front end (`site/`).
-
-| Tab | What you do there | Screenshot |
-|---|---|---|
-| **Data** | Pick Shapes, or choose, drag and drop or paste your own images (a whole folder works) or a CSV; see one input next to the global and local views the model will train on. | [tab-data](assets/screens/tab-data.png) |
-| **Train** | Pick a preset (Quick look, Balanced, Thorough) or set steps, λ, learning rate and SIGReg directions, each with a precise number box, inline checks against the config schema and a help link; watch the total loss, the prediction term and the SIGReg term live, with a health check and the hardware card. | [tab-train](assets/screens/tab-train.png) |
-| **Inspect** | Explore the embedding cloud in 3-D or 2-D (principal components), read the collapse detector, browse nearest neighbours and saliency maps (plus [CLS] attention maps for ViT-tiny runs in the desktop app), and replay "projections turn Gaussian". | [tab-inspect](assets/screens/tab-inspect.png) |
-| **Evaluate** | Freeze the encoder; fit a linear probe and a kNN classifier on a few labels; compare with a random-init and a supervised baseline. | [tab-evaluate](assets/screens/tab-evaluate.png) |
-| **World model** | Pick an environment and a goal; the Cross-Entropy Method (CEM) planner imagines in latent space, acts, replans; compare with random actions. | [tab-world](assets/screens/tab-world.png) |
-| **Explain** | Optional, off by default. Ask how something works; answers are passages quoted from these docs and your run log, with links. In the browser nothing is generated; the desktop can optionally phrase answers with an offline local model. | [tab-explain](assets/screens/tab-explain.png) |
-| **Export** | Download embeddings (CSV/`.npy`), weights (safetensors), the run report or a reproducibility bundle; view, edit, validate and apply the run config as JSON. | [tab-export](assets/screens/tab-export.png) |
-
-Also in `assets/screens/`: [landing.png](assets/screens/landing.png),
-[landing-dark.png](assets/screens/landing-dark.png) and
-[hardware-card.png](assets/screens/hardware-card.png).
+![The Science tab](assets/screens/tab-science.png)
 
 ## Web or desktop?
 
-![What runs where: web demo versus desktop app](assets/web-vs-desktop.svg)
-
-| | Web demo (browser tab) | Desktop app / Python package |
+| | Website (browser tab) | Desktop app |
 |---|---|---|
-| Install | none | `pip install -e .`, or the desktop app with one-click setup ([desktop.md](docs/desktop.md)) |
-| Compute | JavaScript; WebGPU for the first layer's two big matrix products, only when verified correct and faster | PyTorch on CPU, CUDA, ROCm or Apple MPS |
-| Encoders | `mlp-tiny` (218 512 parameters, 16 × 16 inputs) | `convnet-tiny`, `convnet-small`, `vit-tiny`, `mlp-tiny`, `video-convnet`, `series-conv` |
-| Data | Shapes, local images (≤ 2000), CSV preview | images, video clips, time series (CSV/TSV/NPY), Shapes |
-| Hardware tuning | timing probe for batch size | full hardware card, automatic precision / workers / threads / batch size, modes, thermal pause |
-| Pause / resume | in the tab, while it stays open; no checkpoints on disk | checkpoints on disk (safetensors), pause / stop / resume across restarts |
-| World model | plans with the shipped models | trains new models and plans |
-| Explain | BM25 over the docs | BM25, plus an optional offline local model |
-| Your files | decoded in the page, never uploaded | read from folders you grant |
+| Install | none | the app, plus Ollama and a model for JEV |
+| JEV agent | no: it needs Ollama and a backend that can run code; the tab explains and links the download | yes, with sandbox and approvals |
+| Science | live black hole and simulations (WebGL) | the same, plus video renders on your computer |
+| JEPA compute | JavaScript; WebGPU for the first layer when verified correct and faster | PyTorch on CPU, CUDA, ROCm or Apple MPS |
+| JEPA encoders | `mlp-tiny` (218 512 parameters, 16 × 16 inputs) | `convnet-tiny`, `convnet-small`, `vit-tiny`, `mlp-tiny`, `video-convnet`, `series-conv` |
+| JEPA data | Shapes, local images (≤ 2000), CSV preview | images, video clips, time series (CSV/TSV/NPY), Shapes |
+| Your files | decoded in the page, never uploaded | read from folders you grant; leave the machine only through a tool you approve |
 
-## How LeJEPA works, in five sentences
+## JEPA Studio: LeJEPA on your own data
+
+LeJEPA is a Joint-Embedding Predictive Architecture (JEPA) trained with Sketched Isotropic
+Gaussian Regularization (SIGReg): one loss, one knob, no teacher network
+([Balestriero & LeCun, 2025](https://arxiv.org/abs/2511.08544)). The JEPA tabs show every step
+(views, loss terms, embedding cloud, collapse check, probes, planning), run on whatever machine
+you have, and write down every number and decision so you can check them.
+
+| Tab | What you do there | Screenshot |
+|---|---|---|
+| **Data** | Pick Shapes, or choose, drop or paste your own images (a folder works) or a CSV; see one input next to its global and local views. | [tab-data](assets/screens/tab-data.png) |
+| **Train** | Pick a preset or set steps, λ, learning rate and SIGReg directions (validated against the config schema); watch the loss terms live, with a health check and the hardware card. | [tab-train](assets/screens/tab-train.png) |
+| **Inspect** | Explore the embedding cloud in 3-D or 2-D, read the collapse detector, browse nearest neighbours and saliency maps (plus [CLS] attention for ViT-tiny on desktop). | [tab-inspect](assets/screens/tab-inspect.png) |
+| **Evaluate** | Freeze the encoder; fit a linear probe and a kNN classifier on a few labels; compare with random-init and supervised baselines. | [tab-evaluate](assets/screens/tab-evaluate.png) |
+| **World model** | The Cross-Entropy Method (CEM) planner imagines in latent space, acts, replans; compare with random actions. | [tab-world](assets/screens/tab-world.png) |
+| **Explain** | Optional. Passages quoted from these docs and your run log, with links; nothing is generated in the browser. | [tab-explain](assets/screens/tab-explain.png) |
+| **Export** | Embeddings (CSV/`.npy`), weights (safetensors), the run report or a reproducibility bundle; edit and apply the run config as JSON. | [tab-export](assets/screens/tab-export.png) |
+
+The command line does the same without the app (`jepa-studio <command> --help`):
+
+```bash
+jepa-studio doctor                                    # check the install
+jepa-studio train --name shapes --epochs 2 --run-dir runs/my-shapes --eval
+jepa-studio inspect --run-dir runs/my-shapes          # isotropy + collapse verdict
+jepa-studio export  --run-dir runs/my-shapes          # HTML report + reproducibility bundle
+jepa-studio world   --env two-room --out runs/my-two-room   # world model + planning bot
+```
+
+`hardware` benchmarks the machine and explains each automatic setting (precision, workers,
+batch size under 85% of memory, thermal pause; [docs/hardware.md](docs/hardware.md)); `bench`
+measures what each one buys; `sign-weights` / `verify-weights` handle Ed25519-signed manifests;
+only safetensors weights are ever loaded.
+
+### How LeJEPA works, in five sentences
 
 ![Views, encoder, projector, prediction term and SIGReg](assets/architecture.svg)
 
@@ -126,29 +167,7 @@ Also in `assets/screens/`: [landing.png](assets/screens/landing.png),
 Every equation, exactly as coded, with worked examples that a test re-checks:
 [docs/equations.md](docs/equations.md).
 
-## Hardware auto-tuning
-
-<img src="assets/screens/hardware-card.png" alt="The hardware card in the Train tab" width="420" align="right">
-
-Before training, jepa-studio probes the machine (CPU, RAM, GPU and its bf16/fp16 support, disk
-speed, temperature sensors) and picks precision, channels-last, data workers, threads and the
-largest batch size that fits under 85% of memory, **writing each choice and its reason** into
-`hardware.json`. Three modes (max, balanced, quiet) trade speed for a cooler, quieter machine,
-and training pauses itself if a sensor passes 85 °C. `jepa-studio bench` measures what each
-setting actually buys on your machine:
-
-![Samples per second as each automatic setting is switched on](assets/throughput.svg)
-
-Honest result on the machine in the figure (a 2-core CPU with no GPU,
-`assets/throughput-benchmark.json`, median of 3 runs): baseline 202.5 samples/s, with batch 128
-199.7, plus one loader worker 195.3. **On a small CPU the tuner's choices are speed-neutral**
-(the three runs overlap); the settings that matter (bf16, channels-last, pinned memory, more
-workers) only switch on with a GPU, and we have no GPU measurement in this repo yet.
-Details: [docs/hardware.md](docs/hardware.md).
-
-<br clear="right">
-
-## The planning bot
+### The planning bot
 
 A JEPA world model learns to predict the next frame's *embedding* from the current one and an
 action (trained end-to-end from pixels with the same SIGReg, the LeWorldModel recipe). The CEM
@@ -164,7 +183,7 @@ imagined embedding is shown as the nearest real frame. Each GIF shows the first 
 episode the planner solved; the success rates below are the representative numbers.
 Details: [docs/world-model.md](docs/world-model.md).
 
-## Results (real, small, CPU)
+### Results (real, small, CPU)
 
 These come straight from files in this repo. They are **tiny CPU runs** meant to show the
 method working end to end, not benchmarks.
@@ -208,49 +227,50 @@ two-room works. push-block is weak: when the planner fails it often pushes the b
 way, so its mean final distance is worse than random and worse than doing nothing. The latent
 encodes the block's position poorly (R² 0.19 / 0.38 in `metrics.json`). One seed, 20 episodes.
 
+## Documentation
+
+JEV: [overview and setup](docs/jev/README.md) ·
+[safety model](docs/jev/SAFETY.md) ·
+[HTTP API](docs/jev/api.md) ·
+[the app's JEV and Science tabs](docs/jev/ui.md) ·
+[media](docs/jev/media.md) ·
+[science](docs/jev/science.md).
+
+JEPA: [equations](docs/equations.md) ·
+[data](docs/data.md) ·
+[hardware](docs/hardware.md) ·
+[world model](docs/world-model.md) ·
+[web demo](docs/web-demo.md) ·
+[local API](docs/api.md).
+
+App and project: [desktop app](docs/desktop.md) ·
+[security model](docs/SECURITY_MODEL.md) ·
+[bibliography](docs/bibliography.md) ·
+[reference repos](docs/references.md) ·
+[visual style](docs/STYLE.md) ·
+[contributing](CONTRIBUTING.md). Index: [docs/README.md](docs/README.md).
+
 ## Repository map
 
 ```
-jepa_studio/            Python package
-  losses.py               LeJEPA objective, SIGReg, Epps–Pulley
-  models.py               encoders (convnets, ViT, MLP, video, time series) + projector
-  train.py                training loop, auto batch size, checkpoints, pause/resume, benchmark
-  hardware.py             hardware card, automatic decisions, thermal throttle
-  evaluate.py             linear probe, kNN, isotropy metrics, collapse detector, baselines
-  weights.py              safetensors-only I/O, hashes, signed manifests
-  export.py               run report (HTML/JSON) + reproducibility bundle
-  server.py               localhost API for the desktop app
-  assistant.py            the Explain assistant (BM25, optional local model)
-  config.py, cli.py       shared config format + validator, the `jepa-studio` command
-  data/                   loaders (images, video, time series), views, synthetic Shapes
-  world/                  environments, world model, CEM planner, browser export
-site/                   the web app (static; also the desktop front end)
-desktop/                Tauri desktop shell
-schema/                 config.schema.json (shared by Python and the browser)
-configs/                example configs (shapes-desktop.json)
-runs/                   real results quoted above (eval, hardware, config, metrics, events)
-assets/                 README figures and screenshots
-docs/                   documentation (below)
-scripts/                docs-index builder and figure scripts
-tests/                  pytest suite; tests/js holds the Node checks it runs
+jev/                    JEV, the local agent: agent loop, policy (approvals), sandbox, Ollama client,
+                          store (SQLite audit log), tools/, science/ (Kerr ray tracer, sims), media/
+jepa_studio/            JEPA Studio: losses, models, training, hardware, evaluation, export,
+                          the localhost server (mounts /api/jev), data loaders, world models
+site/                   the web app (static; also the desktop front end): js/tabs/, js/jev/, js/science/
+desktop/                Tauri desktop shell (JEV Studio)
+schema/, configs/       config schema and examples
+runs/                   real results quoted above
+assets/                 README figures, renders and screenshots
+docs/                   documentation (above); docs/jev/ for JEV
+scripts/, tests/        docs-index builder and figure scripts; pytest suite (tests/js: Node checks)
 ```
 
-## Documentation
-
-[Equations](docs/equations.md) ·
-[Data](docs/data.md) ·
-[Hardware](docs/hardware.md) ·
-[World model](docs/world-model.md) ·
-[Web demo](docs/web-demo.md) ·
-[Desktop app](docs/desktop.md) ·
-[Local API](docs/api.md) ·
-[Security model](docs/SECURITY_MODEL.md) ·
-[Bibliography](docs/bibliography.md) ·
-[Reference repos](docs/references.md) ·
-[Visual style](docs/STYLE.md) ·
-[Contributing](CONTRIBUTING.md). Index: [docs/README.md](docs/README.md).
-
 ## Security, in short
+
+JEV's sandbox and approvals are summarized [above](#the-safety-model-in-short). For the rest of the
+app:
+
 
 * **Weights:** only safetensors are loaded; pickle checkpoints are refused (convert explicitly with
   `import-legacy`). Optional SHA-256 checks and Ed25519-signed manifests (`sign-weights`,
@@ -259,7 +279,7 @@ tests/                  pytest suite; tests/js holds the Node checks it runs
   size caps, `.npy` without pickle, CSV parsed as numbers only.
 * **Desktop backend:** binds 127.0.0.1, per-session token, `Host` and `Origin` checks, JSON-only
   bodies capped at 2 MB, reads only folders you granted.
-* **Assistant:** retrieval first and extractive by default; untrusted log text is sanitised and
+* **Explain assistant** (the JEPA docs helper, not JEV): retrieval first and extractive by default; untrusted log text is sanitised and
   marked; it has no tools, so injected instructions have nothing to act on.
 * **Supply chain:** actions pinned by commit SHA, least-privilege workflow permissions,
   Dependabot, CodeQL, OpenSSF Scorecard and gitleaks.
@@ -272,7 +292,7 @@ more) is listed in
 
 ## Citing
 
-To cite jepa-studio, use [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button).
+To cite JEV Studio (the Python package is `jepa-studio`), use [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button).
 Please also cite the methods it implements:
 
 ```bibtex

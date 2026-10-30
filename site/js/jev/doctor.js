@@ -5,7 +5,7 @@ import { el, clear, $ } from '../ui/dom.js';
 import { icon, statusItem } from './icons.js';
 import { getPref, setPref } from '../ui/prefs.js';
 
-export const FALLBACK_MODEL = 'qwen2.5:7b';
+export const FALLBACK_MODEL = 'qwen2.5-coder:7b';   // jev/settings.py default
 
 export function guessOs() {
   const ua = String((globalThis.navigator && (navigator.userAgentData?.platform || navigator.platform || navigator.userAgent)) || '');
@@ -43,6 +43,13 @@ export function gpuText(g) {
   if (typeof g === 'string') return g;
   if (Array.isArray(g)) return g.map(gpuText).join(', ') || 'CPU only';
   if (g.available === false) return 'CPU only';
+  // jev/api.py gpu_info(): {cuda, mps, devices: [{name, memory_gb}]}
+  if (Array.isArray(g.devices) || 'cuda' in g || 'mps' in g) {
+    const devs = (g.devices || []).map((d) => [d.name, d.memory_gb ? `${d.memory_gb} GB` : ''].filter(Boolean).join(', '));
+    if (devs.length) return devs.join('; ');
+    if (g.mps) return 'Apple GPU (Metal)';
+    return 'CPU only';
+  }
   return [g.name || g.device || g.backend || 'GPU', g.memory_gb ? `${g.memory_gb} GB` : g.vram_gb ? `${g.vram_gb} GB` : ''].filter(Boolean).join(', ');
 }
 

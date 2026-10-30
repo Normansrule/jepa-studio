@@ -38,7 +38,8 @@ from . import background, color, kerr
 
 
 class Cancelled(RuntimeError):
-    """Raised when the caller's cancelled() returned True; partial files are removed."""
+    """Raised internally when the caller's cancelled() returns True; render() then removes partial
+    files and returns an empty list (the caller checks its own cancel flag)."""
 
 
 DEFAULTS = {
@@ -59,8 +60,16 @@ MAX_FRAMES = 1800
 
 def normalize(params: dict | None) -> dict:
     """Fill defaults, clamp to physical ranges and validate. Raises ValueError with a readable message."""
-    p = {**DEFAULTS, **{k: v for k, v in (params or {}).items() if k != "disk" and v is not None}}
-    disk = {**DISK_DEFAULTS, **{k: v for k, v in ((params or {}).get("disk") or {}).items() if v is not None}}
+    params = params or {}
+    unknown = sorted(set(params) - set(DEFAULTS) - {"disk"})
+    if unknown:
+        params = {k: v for k, v in params.items() if k not in unknown}     # e.g. API envelope fields
+    p = {**DEFAULTS, **{k: v for k, v in params.items() if k != "disk" and v is not None}}
+    disk_in = params.get("disk") or {}
+    if not isinstance(disk_in, dict):
+        raise ValueError("disk must be an object")
+    disk = {**DISK_DEFAULTS, **{k: v for k, v in disk_in.items() if v is not None and
+                                (k in DISK_DEFAULTS or k == "interstellar")}}
     if p.pop("interstellar", False) or disk.pop("interstellar", False):
         disk["doppler"] = disk["beaming"] = False
     disk.pop("interstellar", None)
@@ -297,12 +306,20 @@ def estimate_seconds(params: dict) -> dict:
 def render(params: dict, out_dir: Path, progress: Callable[[float, str], None] | None = None,
            cancelled: Callable[[], bool] | None = None) -> list[Path]:
     """Render a still (frames == 1, PNG) or an animation (MP4 or GIF) plus a JSON sidecar with the
-    parameters, timings and physical reference numbers. See DEFAULTS / DISK_DEFAULTS for params."""
+    parameters, timings and physical reference numbers. See DEFAULTS / DISK_DEFAULTS for params.
+    Invalid parameters raise ValueError; a cancelled render returns [] and leaves no partial files."""
     progress = progress or _noop
     cancelled = cancelled or (lambda: False)
     p = normalize(params)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return _render(p, out_dir, progress, cancelled)
+    except Cancelled:
+        return []
+
+
+def _render(p, out_dir, progress, cancelled):
     a = p["spin"]
     stem = f"blackhole_a{a:.3f}_i{p['inclination_deg']:.0f}_r{p['distance_M']:.0f}".replace(".", "p")
     t_start = time.perf_counter()

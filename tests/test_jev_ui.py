@@ -129,7 +129,12 @@ class FakeJev:
         if path.startswith("/api/jev/conversations/") and path.endswith("/files"):
             return 200, {"path": f"uploads/{body.get('name')}", "name": body.get("name"), "bytes": len(body.get("data_base64", "")) * 3 // 4}
         if path.startswith("/api/jev/conversations/") and method == "GET":
-            return 200, {"id": "c1", "title": "Black hole render", "messages": [], "artifacts": [IMG, VID]}
+            return 200, {"id": "c1", "title": "Black hole render", "artifacts": [IMG, VID], "messages": [
+                {"role": "user", "content": "Render a black hole"},
+                {"role": "assistant", "content": "", "tool_calls": json.dumps(
+                    [{"id": "k1", "function": {"name": "render_black_hole", "arguments": {"spin": 0.9}}}])},
+                {"role": "tool", "content": "Rendered a 640x360 frame.", "tool_name": "render_black_hole"},
+                {"role": "assistant", "content": "Here it is, with `spin = 0.9`."}]}
         if path == "/api/jev/chat":
             self.chats.append(body)
             self.conversations = [{"id": "c1", "title": "Black hole render", "created": time.time(), "updated": time.time(), "model": "qwen2.5:7b"}]
@@ -581,5 +586,28 @@ def test_science_render_on_computer(browser):
     wait_until(page, lambda: (page.get_attribute("#sci-gallery video", "src") or "").startswith("blob:"), what="render video")
     wait_until(page, lambda: "Finished" in (page.text_content("#sci-job-status") or ""), what="job finished")
     assert not page.is_disabled("#bh-render")
+    con.check()
+    ctx.close()
+
+
+def test_open_a_saved_conversation(browser):
+    fake = FakeJev()
+    fake.conversations = [{"id": "c1", "title": "Black hole render", "created": time.time(), "updated": time.time(),
+                           "model": "qwen2.5:7b"}]
+    ctx, page, con = desktop_page(browser, fake)
+    wait_until(page, lambda: page.locator("#jev-conv-list .conv").count() == 1, what="conversation list")
+    page.click("#jev-conv-list .conv")
+    wait_until(page, lambda: page.locator("#jev-log .msg").count() == 3, what="history rendered")
+    assert page.text_content("#jev-conv-title") == "Black hole render"
+    assert page.get_attribute("#jev-conv-list .conv", "aria-current") == "true"
+    assert "Rendered a 640x360 frame." in page.locator("#jev-log .tool-card .tc-out").inner_text()
+    assert page.locator("#jev-log .msg-jev code", has_text="spin = 0.9").count() == 1
+    assert not page.is_visible("#jev-starters")
+    wait_until(page, lambda: page.locator("#jev-gallery .art").count() == 2, what="gallery from the conversation")
+    # New conversation clears the log and the gallery
+    page.click("#jev-new")
+    assert page.locator("#jev-log .msg").count() == 0 and page.is_visible("#jev-starters")
+    assert page.text_content("#jev-conv-title") == "New conversation"
+    assert page.evaluate("() => document.activeElement.id") == "jev-input"
     con.check()
     ctx.close()

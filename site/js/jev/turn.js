@@ -72,6 +72,10 @@ class ToolCard {
   }
 
   progress(fraction, message) {
+    if (fraction === null || fraction === undefined) {     // a message without a measurable fraction
+      if (message) { this.msg.hidden = false; this.msg.textContent = String(message); }
+      return;
+    }
     const pct = Math.round(Math.max(0, Math.min(1, Number(fraction) || 0)) * 100);
     this.bar.hidden = false;
     this.bar.firstChild.style.width = `${pct}%`;

@@ -47,7 +47,7 @@
         <p class="t-you">Render a spinning black hole, make a 10-second video circling it, and save it to my Videos folder.</p>
       </div>
       <div>
-        <p class="who">JEV <span class="hint who-model">qwen2.5:7b</span></p>
+        <p class="who">JEV <span class="hint who-model">qwen2.5-coder:7b</span></p>
         <div class="msg-body">
           <section class="tool-card" data-state="done" aria-label="Tool render_black_hole">
             <header class="tc-head"><code class="tc-name">render_black_hole</code><span class="risk" data-risk="sandbox"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l8.2 4.6v9.2L12 21.2l-8.2-4.6V7.4z"/><path d="M3.8 7.4L12 12l8.2-4.6"/><path d="M12 12v9.2"/></svg><span>Sandbox</span></span><span class="tc-state"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Done</span></span></header>
@@ -163,9 +163,9 @@
       <a class="dl" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest"><b>macOS</b><span>.dmg, Apple silicon and Intel</span></a>
       <a class="dl" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest"><b>Linux</b><span>.AppImage and .deb</span></a>
     </div>
-    <pre class="cli" aria-label="Command line install">ollama pull qwen2.5:7b     # a local model JEV can call tools with
-pip install jepa-studio     # the Python package: JEPA tools and the JEV backend
-jepa-studio serve           # the same UI on 127.0.0.1, backed by PyTorch and JEV</pre>
+    <pre class="cli" aria-label="Command line install">ollama pull qwen2.5-coder:7b   # JEV's default model (about 4.7 GB)
+pip install "jepa-studio[jev]"  # the Python package: JEPA tools and the JEV backend
+jepa-studio serve             # the same UI on 127.0.0.1, backed by PyTorch and JEV</pre>
   </section>
 </main>
 

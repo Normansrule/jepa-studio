@@ -532,8 +532,17 @@ def _trail(dr, pts, rgb, width=2):
         dr.line([pts[k - 1], pts[k]], fill=col, width=width)
 
 
+def _font(size):
+    from PIL import ImageFont
+    try:
+        return ImageFont.load_default(size=size)     # FreeType default font (Pillow >= 10.1)
+    except TypeError:                                # pragma: no cover - older Pillow
+        return ImageFont.load_default()
+
+
 def _label(dr, p, text):
-    dr.text((12, p["height"] - 22), text, fill=V.INK3)
+    size = max(11, p["height"] // 30)
+    dr.text((12, p["height"] - size - 10), text, fill=V.INK3, font=_font(size))
 
 
 def frames_nbody(res, p, nframes):
@@ -698,8 +707,8 @@ def summary_chart(kind, res, path) -> bool:
         if kind in ("double_pendulum", "lorenz"):
             ax.semilogy(res["t"], res["sep"], color=c0)
             lam = res["metrics"].get("lyapunov_estimate_per_s", res["metrics"].get("lyapunov_estimate"))
-            ax.set_title(f"Separation of nearby runs (Lyapunov fit {lam:.3g} per unit time)" if lam else
-                         "Separation of nearby runs")
+            ax.set_title(f"Separation of two nearby runs (fit {lam:.3g} / time)" if lam else
+                         "Separation of two nearby runs")
             ax.set_xlabel("time")
         elif kind == "nbody":
             X = res["x"]
@@ -735,8 +744,51 @@ KINDS = ("nbody", "double_pendulum", "wave", "orbit", "lorenz")
 ALIASES = {"pendulum": "double_pendulum", "n_body": "nbody", "kepler": "orbit"}
 
 
+def estimate_seconds(kind: str, params: dict | None = None) -> dict:
+    """Rough CPU-time estimate (calibrated on a 2-core laptop-class CPU): simulation steps plus frame
+    drawing and encoding. Advisory only: used to decide whether a run needs approval."""
+    kind = ALIASES.get(kind, kind)
+    if kind not in KINDS:
+        raise ValueError(f"unknown simulation {kind!r}")
+    p = _common(params or {})
+    frames = p["seconds"] * p["fps"]
+    px = p["width"] * p["height"] / 307200
+    if kind == "nbody":
+        preset = p.get("preset", "figure8")
+        n = {"figure8": 3, "solar": 5}.get(preset, int(p.get("n", 40)))
+        dt = float(p.get("dt", {"figure8": 1e-3, "solar": 2e-4}.get(preset, 2e-3)))
+        t_end = float(p.get("t_end", {"figure8": 12.65, "solar": 2.0}.get(preset, 6.0)))
+        sim = t_end / dt * (5e-5 + 4e-7 * n * n)
+        draw = frames * (0.01 + 0.0025 * n) * px
+    elif kind == "double_pendulum":
+        sim = float(p.get("t_end", 20.0)) / float(p.get("dt", 1e-3)) * 4e-4
+        draw = frames * 0.02 * px
+    elif kind == "wave":
+        n = int(p.get("n", 200))
+        dx = 1.0 / (n - 1)
+        dt = float(p.get("dt") or float(p.get("courant", 0.5)) * dx / (float(p.get("c", 1.0)) * math.sqrt(2)))
+        sim = float(p.get("t_end", 1.4)) / dt * n * n * 4e-8
+        draw = frames * 0.03 * px
+    elif kind == "orbit":
+        sim = float(p.get("orbits", 4)) * float(p.get("steps_per_orbit", 2000)) * 4e-5
+        draw = frames * 0.02 * px
+    else:
+        sim = float(p.get("t_end", 30.0)) / float(p.get("dt", 0.005)) * 1e-4
+        draw = frames * 0.02 * px
+    return {"seconds": float(sim + draw + 1.5), "simulate_s": float(sim), "draw_s": float(draw)}
+
+
 def run(kind: str, params: dict, out_dir: Path, progress: Callable[[float, str], None] | None = None,
         cancelled: Callable[[], bool] | None = None) -> list[Path]:
+    """Run a simulation and film it. Returns [video, summary.png (if matplotlib), metrics.json];
+    invalid parameters raise ValueError; a cancelled run returns [] and leaves no partial files."""
+    try:
+        return _run(kind, params, out_dir, progress, cancelled)
+    except Cancelled:
+        return []
+
+
+def _run(kind, params, out_dir, progress, cancelled):
     progress = progress or _noop
     kind = ALIASES.get(kind, kind)
     if kind not in KINDS:

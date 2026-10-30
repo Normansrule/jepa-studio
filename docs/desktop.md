@@ -1,12 +1,16 @@
-# The desktop app
+# The desktop app (JEV Studio)
 
-The desktop app is a thin [Tauri 2](https://tauri.app) shell (`desktop/`) around two things that
-already exist in this repo: the static front end in `site/` and the Python backend
-`jepa_studio serve` (`jepa_studio/server.py`, API in [api.md](api.md)). The shell's jobs are
+The desktop app, **JEV Studio**, is a thin [Tauri 2](https://tauri.app) shell (`desktop/`) around
+things that already exist in this repo: the static front end in `site/` and the Python backend
+`jepa_studio serve` (`jepa_studio/server.py`, API in [api.md](api.md)), which also mounts the
+local agent JEV's routes (`jev/api.py`, API in [jev/api.md](jev/api.md)). The shell's jobs are
 small and security-relevant: set up a private Python environment, start the backend on
 localhost with a secret token, show the site in a native window that knows the port and token,
-let the user grant data folders through a native dialog, and stop the backend when the window
-goes away.
+let the user grant data folders through a native dialog, tell the user whether a local Ollama
+is running (JEV's model server), and stop the backend when the window goes away.
+
+JEV itself (models, tools, sandbox, approvals) is described in [jev/README.md](jev/README.md) and
+[jev/SAFETY.md](jev/SAFETY.md); its two tabs in the app in [jev/ui.md](jev/ui.md).
 
 ## How it fits together
 
@@ -16,6 +20,7 @@ flowchart LR
     boot["boot thread<br/>setup.rs · backend.rs"]
     cmds["commands<br/>pick_data_folder · backend_status"]
     dlg["native folder dialog"]
+    olw["Ollama watcher<br/>ollama.rs"]
   end
   subgraph setupwin["setup window (jepa-setup: scheme)"]
     splash["progress / error view"]
@@ -23,7 +28,8 @@ flowchart LR
   subgraph mainwin["main window (bundled site/app.html)"]
     site["site JS<br/>backend.js → DesktopBackend"]
   end
-  py["Python backend<br/>jepa_studio serve<br/>127.0.0.1:PORT"]
+  py["Python backend<br/>jepa_studio serve + /api/jev<br/>127.0.0.1:PORT"]
+  oll["Ollama<br/>127.0.0.1:11434"]
   env[("private venv<br/>+ pinned torch")]
   allow[("allowed-folders.txt")]
 
@@ -37,6 +43,8 @@ flowchart LR
   cmds --> dlg
   cmds -- "append canonical path" --> allow
   py -- "re-reads per request" --> allow
+  olw -- "GET /api/version every 3 s" --> oll
+  py -- "chat, models" --> oll
 ```
 
 Startup, step by step:
@@ -62,7 +70,13 @@ Startup, step by step:
    only on the bundled origin). `site/js/backend.js` sees it and switches to the desktop tier.
 7. The setup window closes. A watcher checks the backend every 2 seconds and shows an error
    dialog if it stops unexpectedly.
-8. Closing the main window (or its web process dying) kills the backend and quits the app.
+8. From the start, a second watcher checks every 3 seconds whether a local **Ollama** answers
+   `GET /api/version` (`ollama.rs`): on `127.0.0.1:11434`, or on `OLLAMA_HOST` when that names a
+   loopback address (a non-loopback `OLLAMA_HOST` is ignored, so the shell never contacts another
+   machine). The result is part of `backend_status` and shown in the setup window ("Ollama is
+   running (0.12.6)" or "not running: JEV needs it to chat; the JEPA tools work without it") and in
+   the app's Doctor. JEPA features never need Ollama.
+9. Closing the main window (or its web process dying) kills the backend and quits the app.
 
 ## First launch: the private Python environment
 
@@ -88,9 +102,12 @@ runs, then reuses it.
    the first index that has them. `JEPA_STUDIO_TORCH_INDEX=<url>` forces one index.
 4. **Install the other pins** from `requirements-desktop.txt` (compiled into the binary) from
    PyPI. The already-installed `torch==X+cuNNN` satisfies the `torch==X` pin.
-5. **Install `jepa_studio` itself** with `pip install --no-deps` from the copy bundled with the
-   app (`bundle.resources` → `python/jepa_studio`). It is staged to a writable temporary folder
-   first because the bundle may be read-only.
+5. **Install `jepa_studio` and `jev`** with one `pip install --no-deps` from the copies bundled
+   with the app (`bundle.resources`: `../../jepa_studio/` → `python/jepa_studio/` and
+   `../../jev/` → `python/jev/`). They are staged to a writable temporary folder first, because
+   the bundle may be read-only, with a generated `pyproject.toml` that includes both packages and
+   their data files (`setup.rs`, `pyproject_toml`, unit-tested). A bundle without `python/jev`
+   still installs the JEPA tools and logs a warning; the JEV tab then says the routes are missing.
 6. **Record the result** in `<data>/setup.json`: base Python, venv interpreter, accelerator, the
    index torch came from, the indexes tried, and a stamp (SHA-256 of the requirements file and
    the app version). The next launch skips straight to starting the backend when the stamp
@@ -107,9 +124,13 @@ roaming profile, because the venv is large):
 
 | OS | `<data>` |
 |---|---|
-| Windows | `%LOCALAPPDATA%\io.github.normansrule.jepastudio\` |
-| macOS | `~/Library/Application Support/io.github.normansrule.jepastudio/` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/io.github.normansrule.jepastudio/` |
+| Windows | `%LOCALAPPDATA%\io.github.normansrule.jevstudio\` |
+| macOS | `~/Library/Application Support/io.github.normansrule.jevstudio/` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/io.github.normansrule.jevstudio/` |
+
+Versions before 0.4.0 were called jepa-studio and used `io.github.normansrule.jepastudio`. JEV
+Studio does not read that folder: the first launch builds a new environment, and old runs stay
+where they were (copy `workspace/runs/` over if you want them in the new app).
 
 | Path | What |
 |---|---|
@@ -118,12 +139,13 @@ roaming profile, because the venv is large):
 | `<data>/requirements-desktop.txt` | the pins pip installed from |
 | `<data>/allowed-folders.txt` | folders you granted, one per line (grants persist across launches; delete a line to revoke) |
 | `<data>/workspace/runs/` | training runs, checkpoints, exports |
+| `<data>/workspace/jev-data/` | JEV: settings, the SQLite store (conversations, audit log) and one workspace folder per conversation ([jev/README.md](jev/README.md)) |
 | `<data>/logs/setup.log` | setup and pip output |
 | `<data>/logs/backend.log` | backend stderr/stdout (never contains the token) |
 
-The bundled package sits next to the executable: `jepa-studio.app/Contents/Resources/python/`
-on macOS, `python\` in the install folder on Windows, `/usr/lib/jepa-studio/python/` for the
-`.deb`.
+The bundled packages sit next to the executable: `JEV Studio.app/Contents/Resources/python/`
+on macOS, `python\` in the install folder on Windows, and the app's folder under `/usr/lib/` for
+the `.deb` (`python/jepa_studio`, `python/jev`, `python/docs` with `docs/jev`, `python/README.md`).
 
 To reset the app completely, quit it and delete `<data>`.
 
@@ -154,8 +176,11 @@ local port with a secret, and ask the shell for exactly two things.
   else, not even `core:default`.
 * **Content Security Policy (CSP).** The main window's policy comes from
   `tauri.conf.json` (`app.security.csp`) as a response header:
-  `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
-  At runtime the shell narrows `http://127.0.0.1:*` to this session's port, and removes the
+  `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' http://127.0.0.1:* ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
+  `media-src blob:` lets JEV's videos and audio play from `blob:` URLs: the page fetches each file
+  from the backend with the token header and plays the bytes, so no media URL ever carries the
+  token. At runtime the shell makes sure `media-src` allows `blob:` (`csp::ensure_media_blob`,
+  which never adds anything wider), narrows `http://127.0.0.1:*` to this session's port, and removes the
   site's own `<meta http-equiv="Content-Security-Policy">` from HTML it serves to the desktop
   window: that meta policy is the web tier's (`connect-src 'self'`), and since browsers enforce
   both a meta and a header policy, leaving it would block every backend call. The website
@@ -179,7 +204,8 @@ first.
 // string if the folder cannot be granted.
 const folder = await window.__TAURI__.core.invoke('pick_data_folder');
 
-// Resolves to {phase, message, progress, line, error, port, accelerator, torchIndex, python, logDir}
+// Resolves to {phase, message, progress, line, error, port, accelerator, torchIndex, python, logDir,
+//              ollama: {reachable, url, version, error} | null}
 // phase: "setup" | "starting" | "ready" | "error"
 const status = await window.__TAURI__.core.invoke('backend_status');
 ```
@@ -190,6 +216,8 @@ for images, video clips and CSV time series (`site/js/tabs/data.js`, `useDesktop
 The web tier keeps its `<input type="file">` path. `tests/test_desktop_tier.py` drives this
 flow in a headless browser against the real backend (with `invoke` stubbed), including a
 refused folder that was never granted.
+
+The JEV tab's Doctor calls `backend_status` too, for the shell's own Ollama probe.
 
 The in-app assistant searches the docs bundled with the app: `bundle.resources` copies `docs/`
 and `README.md` to `python/docs` and `python/README.md`, and the shell passes
@@ -223,8 +251,17 @@ JEPA_STUDIO_PYTHON=$(which python3) PYTHONPATH=$PWD/.. npx tauri dev
 ```
 
 Debug builds also accept `JEPA_STUDIO_SMOKE=1`: after the main window loads, the shell imports
-`js/backend.js` in the page, calls `/api/health` through it, prints `[smoke] OK {...}` or
-`[smoke] FAIL ...` on stderr and exits (headless check: `xvfb-run -a target/debug/jepa-studio`).
+`js/backend.js` in the page, calls `/api/health` and `/api/jev/status` through it, reads
+`backend_status` (including the Ollama probe), prints `[smoke] OK {...}` or `[smoke] FAIL ...` on
+stderr and exits. Headless check from the repository root:
+
+```bash
+cd desktop/src-tauri && cargo build -j 2 && cd ../..
+JEPA_STUDIO_SMOKE=1 JEPA_STUDIO_PYTHON=/usr/bin/python3 PYTHONPATH=$PWD \
+  xvfb-run -a ./desktop/src-tauri/target/debug/jev-studio
+# [smoke] OK {"tier":"desktop",...,"pageTitle":"JEV Studio","jev":{"version":"0.4.0","ollama":false},
+#             "shell":{"phase":"ready","ollama":{"reachable":false,...}},"errors":[]}
+```
 
 Continuous integration (`.github/workflows/desktop.yml`) builds Windows, macOS (Apple Silicon)
 and Linux installers on every relevant change and publishes a GitHub release with a
@@ -233,7 +270,7 @@ macOS Gatekeeper will warn on first open (macOS: right-click → Open).
 
 ## Troubleshooting
 
-**"jepa-studio needs Python 3.10 or newer"** – No suitable interpreter was found. Install Python
+**"JEV Studio needs Python 3.10 or newer"** – No suitable interpreter was found. Install Python
 from python.org (Windows: keep the `py` launcher, or tick "Add python.exe to PATH"), or on
 Linux `sudo apt install python3 python3-venv`. On macOS, `brew install python` works too.
 Restart the app afterwards.
@@ -270,3 +307,11 @@ loopback sockets for Python.
 
 **The backend stopped unexpectedly** – The dialog shows the last lines of `backend.log`. Out of
 memory during training is the common cause: lower the batch size or image size and restart.
+
+**"Ollama is not running" (setup window, JEV status strip, Doctor)** – JEV needs a local Ollama;
+everything else works without it. Install it from <https://ollama.com/download> (Linux:
+`curl -fsSL https://ollama.com/install.sh | sh`), start it (`ollama serve`, the tray app, or
+`sudo systemctl start ollama`), then `ollama pull qwen2.5-coder:7b`. If Ollama listens on another
+port, start the app with `OLLAMA_HOST=127.0.0.1:<port>` (Ollama and the shell's check read it) and
+`JEV_OLLAMA_URL=http://127.0.0.1:<port>` (JEV reads that). More in
+[jev/README.md](jev/README.md#quick-start).

@@ -133,6 +133,7 @@
         <div class="jev-chat-head">
           <button class="btn jev-convs-toggle" id="jev-convs-toggle" type="button" aria-haspopup="dialog">Conversations</button>
           <h3 id="jev-conv-title">New conversation</h3>
+          <button class="btn jev-export" id="jev-export" type="button" hidden>Export (.zip)</button>
         </div>
         <div class="jev-log" id="jev-log" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="jev-conv-title" tabindex="0"></div>
         <div class="jev-starters" id="jev-starters">
@@ -155,8 +156,8 @@
           </div>
           <div class="pull-form" id="jev-pull-form" hidden>
             <label for="jev-pull-name">Model name from the Ollama library</label>
-            <div class="row"><input id="jev-pull-name" type="text" list="jev-pull-suggest" placeholder="qwen2.5:7b" autocomplete="off" spellcheck="false"><button class="btn" id="jev-pull-go" type="button">Request download</button></div>
-            <datalist id="jev-pull-suggest"><option value="qwen2.5:7b"></option><option value="qwen2.5:3b"></option><option value="qwen2.5-coder:7b"></option><option value="llama3.1:8b"></option><option value="llama3.2:3b"></option></datalist>
+            <div class="row"><input id="jev-pull-name" type="text" list="jev-pull-suggest" placeholder="qwen2.5-coder:7b" autocomplete="off" spellcheck="false"><button class="btn" id="jev-pull-go" type="button">Request download</button></div>
+            <datalist id="jev-pull-suggest"><option value="qwen2.5-coder:7b"></option><option value="qwen2.5:7b"></option><option value="qwen2.5:3b"></option><option value="qwen2.5-coder:7b"></option><option value="llama3.1:8b"></option><option value="llama3.2:3b"></option></datalist>
             <p class="hint">Downloads always ask first. Models that can call tools work best (Qwen 2.5, Llama 3.1 and newer).</p>
             <p class="hint" id="jev-pull-status" role="status"></p>
             <div class="progress" id="jev-pull-bar" role="progressbar" aria-label="Model download" aria-valuemin="0" aria-valuemax="100" hidden><div></div></div>
@@ -188,8 +189,8 @@
       <div id="sci-bh" class="ctl-section">
         <div class="section-head"><h4>Black hole</h4><button class="link-btn" type="button" data-reset="science-bh" aria-label="Reset the black hole settings to their defaults">Reset to defaults</button></div>
         <div class="field"><label for="bh-spin">Spin, a/M</label><div class="row"><input id="bh-spin" type="range" min="0" max="0.99" step="0.01" value="0.9"></div><p class="hint" id="bh-spin-note" hidden></p></div>
-        <div class="field"><label for="bh-distance">Camera distance, in units of M</label><div class="row"><input id="bh-distance" type="range" min="6" max="60" step="1" value="25"></div></div>
-        <div class="field"><label for="bh-incl">Viewing angle from the spin axis, degrees</label><div class="row"><input id="bh-incl" type="range" min="0" max="90" step="1" value="80"></div></div>
+        <div class="field"><label for="bh-distance">Camera distance, in units of M</label><div class="row"><input id="bh-distance" type="range" min="4" max="150" step="1" value="25"></div></div>
+        <div class="field"><label for="bh-incl">Viewing angle from the spin axis, degrees</label><div class="row"><input id="bh-incl" type="range" min="1" max="179" step="1" value="80"></div></div>
         <div class="switch-stack">
           <label class="switch"><input type="checkbox" id="bh-disk" checked> Accretion disk</label>
           <label class="switch"><input type="checkbox" id="bh-doppler" checked> Doppler colour shift</label>
@@ -241,6 +242,7 @@
             <button class="btn" id="sci-retry" type="button">Try again</button>
           </div>
         </div>
+        <figcaption class="hint" id="sci-howto">Drag to orbit, scroll or pinch to zoom. With the view focused: arrow keys orbit, + and − zoom, Space starts or stops the slow turn.</figcaption>
       </figure>
       <div class="panel desktop-only" hidden>
         <div class="panel-head"><h3>Rendered on this computer</h3><span class="hint" id="sci-gallery-count"></span></div>

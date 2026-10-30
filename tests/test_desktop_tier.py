@@ -185,3 +185,22 @@ def test_desktop_refuses_folder_outside_grant(browser, backend):
     cfg = json.loads(page.evaluate("() => JSON.stringify(window.jepaApp.config.data)"))
     assert cfg["path"] is None and cfg["kind"] == "synthetic-shapes"
     ctx.close()
+
+
+def test_jev_tab_against_the_real_backend(browser, backend):
+    """The JEV tab talks to the real /api/jev/status: the strip and the Doctor say whether Ollama
+    is reachable (it is not, on CI), and Send stays disabled with the reason."""
+    ctx, page, errors = _page(browser, backend, backend["data"])
+    page.click("#tab-jev")
+    assert page.is_visible("#jev-desk")
+    _wait(page, lambda: page.get_attribute("#st-ollama", "data-status") in ("good", "bad"), timeout=30)
+    text = page.text_content("#st-ollama")
+    assert "Ollama" in text or "JEV" in text, text
+    if page.get_attribute("#st-ollama", "data-status") == "bad":
+        page.fill("#jev-input", "hello")
+        page.dispatch_event("#jev-input", "input")
+        assert page.is_disabled("#jev-send") and page.is_visible("#jev-send-why")
+    page.click("#jev-doctor-btn")
+    _wait(page, lambda: page.locator("#doctor-checks li").count() >= 3, timeout=10)
+    assert not errors, errors
+    ctx.close()

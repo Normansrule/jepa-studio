@@ -5,7 +5,7 @@
 // rendered as a high-quality video by the local backend (POST /api/jev/science/*), with job
 // progress and the resulting files in this tab's gallery.
 import { $, $$, el, download } from '../ui/dom.js';
-import { field, valueOf } from '../ui/fields.js';
+import { field, valueOf, setValue } from '../ui/fields.js';
 import { getPref, setPref } from '../ui/prefs.js';
 import { Gallery } from '../jev/gallery.js';
 import { follow } from '../jev/client.js';
@@ -24,8 +24,13 @@ const SIM_DEFAULTS = {
   wave: { 'sim-wave-speed': 1, 'sim-wave-damping': 0.002, 'sim-wave-freq': 1.5 },
 };
 const KIND_LABEL = { nbody: 'N-body gravity', double_pendulum: 'Double pendulum', wave: 'Waves on a membrane' };
-// The backend's simulate route names (docs/jev/api.md) where they differ from the browser module's.
-const API_KIND = { double_pendulum: 'pendulum' };
+/** The browser controls as parameters for jev/science/sims.py (its names and presets). */
+function backendSimParams(kind, p) {
+  if (kind === 'nbody') return p.bodies <= 3 ? { preset: 'figure8' } : { preset: 'cluster', n: Math.min(200, Math.round(p.bodies)) };
+  if (kind === 'double_pendulum') return { theta1_deg: p.theta1, theta2_deg: p.theta2 };
+  if (kind === 'wave') return { c: p.speed };
+  return {};
+}
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -75,6 +80,7 @@ export function init(a) {
 
 export function show() {
   active = true;
+  watchSize();
   mount();
   if (!app._sciHideHooked && app.router) {
     app._sciHideHooked = true;
@@ -89,6 +95,7 @@ function syncGroups() {
   for (const g of $$('[data-sim-kind]')) g.hidden = g.dataset.simKind !== simKind;
   const topic = view === 'blackhole' ? 'blackhole' : simKind;
   for (const g of $$('[data-explain]')) g.hidden = g.dataset.explain !== topic;
+  $('#sci-howto').hidden = view !== 'blackhole';
   $('#sci-stage-title').textContent = view === 'blackhole' ? 'Black hole' : KIND_LABEL[simKind];
 }
 
@@ -152,12 +159,39 @@ function teardown() {
   old.replaceWith(c);
 }
 
+/** The camera moved by drag, wheel or keys: show it on the sliders (rounded, within their range). */
+function fromView(p) {
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const d = clamp(Math.round(p.distance), 4, 150), inc = clamp(Math.round(p.inclination), 1, 179);
+  if (d !== Math.round(p.distance) && bh) bh.setParams({ distance: d });
+  setValue('bh-distance', d);
+  setValue('bh-incl', inc);
+}
+
+/** The caller owns the canvas size: keep its pixels matched to its box. */
+let resizeObs = null;
+function watchSize() {
+  if (resizeObs || typeof ResizeObserver !== 'function') return;
+  resizeObs = new ResizeObserver(() => {
+    const c = $('#sci-canvas');
+    const r = c.getBoundingClientRect();
+    if (!r.width || c.hidden) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (c.width === w && c.height === h) return;
+    c.width = w; c.height = h;
+    for (const hnd of [bh, sim]) if (hnd && typeof hnd.render === 'function') { try { hnd.render(); } catch { /* next frame */ } }
+  });
+  resizeObs.observe($('#sci-stage .sci-canvas-wrap'));
+}
+
 function fallback(reason) {
   const box = $('#sci-fallback');
   box.hidden = false;
   $('#sci-fallback-text').textContent = reason;
   $('#sci-canvas').hidden = true;
   $('#sci-stage').dataset.state = 'fallback';
+  $('#sci-howto').hidden = true;
   $('#bh-snapshot').disabled = true;
 }
 
@@ -170,15 +204,15 @@ async function mount() {
   $('#sci-stage').dataset.state = 'loading';
   const rect = canvas.getBoundingClientRect();
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  if (rect.width) { canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.width * 9 / 16 * dpr); }
+  if (rect.width) { canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr || rect.width * 9 / 16 * dpr); }
   const want = view;
   const opts = { reducedMotion: reduced() };
   try {
     if (want === 'blackhole') {
       bhMod = bhMod || await import('../science/blackhole.js');
       if (view !== want || !active) return;
-      canvas.setAttribute('aria-label', 'Rendered black hole: a dark shadow ringed by a lensed accretion disk. Change the view with the controls.');
-      bh = bhMod.mountBlackHole(canvas, { ...opts, ...bhParams() });
+      canvas.setAttribute('aria-label', 'Live black hole: a dark shadow ringed by a lensed accretion disk. Drag or use the arrow keys to orbit, + and − to zoom.');
+      bh = bhMod.mountBlackHole(canvas, { ...opts, ...bhParams(), onChange: fromView });
       describeCaps(bhMod, bh);
     } else {
       simMod = simMod || await import('../science/sims.js');
@@ -187,16 +221,17 @@ async function mount() {
       sim = simMod.mountSim(canvas, simKind, { ...opts, ...simParams() });
     }
     $('#sci-stage').dataset.state = 'live';
+    $('#sci-howto').hidden = want !== 'blackhole';
     $('#sci-status').textContent = want === 'blackhole' ? 'Black hole view running on your graphics card.' : `${KIND_LABEL[simKind]} running.`;
   } catch (e) {
     console.warn('science view unavailable', e);
     const msg = String((e && e.message) || e);
     const noModule = /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(msg);
     fallback(noModule
-      ? 'The live view is not part of this build yet.'
+      ? 'This build does not include the live renderer yet.'
       : /webgl/i.test(msg) ? `This browser could not start WebGL, which the live view needs (${msg}). Try another browser, or turn on hardware acceleration.`
         : `The live view could not start: ${msg}`);
-    $('#sci-status').textContent = 'Live view unavailable.';
+    $('#sci-status').textContent = '';
   }
 }
 
@@ -260,10 +295,10 @@ async function renderOnComputer(which) {
       r = await app.jev.client.renderBlackHole({
         spin: p.spin, inclination_deg: p.inclination, distance_M: p.distance,
         disk: { enabled: p.disk, doppler: p.doppler, beaming: p.beaming },
-        width: w, height: h, seconds, frames: Math.round(seconds * 24),
+        width: w, height: h, seconds, frames: Math.round(seconds * 24), quality: 'final',
       });
     } else {
-      r = await app.jev.client.simulate(API_KIND[simKind] || simKind, { ...simParams(), seconds, width: w, height: h });
+      r = await app.jev.client.simulate(simKind, { ...backendSimParams(simKind, simParams()), seconds, width: w, height: h });
     }
   } catch (e) {
     st.textContent = `The render did not start: ${e.message || e}`;
@@ -275,7 +310,7 @@ async function renderOnComputer(which) {
   if (r.job_id) go(r.job_id);
   else if (r.approval_id) {
     st.textContent = 'This render is long, so it needs your approval.';
-    app.jev.approvals.add({ approval_id: r.approval_id, name: which === 'blackhole' ? 'render_black_hole' : 'simulate', args: r.args || { width: w, height: h, seconds }, reason: r.reason || 'Long renders use the CPU or GPU for several minutes.', risk: 'sandbox' });
+    app.jev.approvals.add({ approval_id: r.approval_id, name: which === 'blackhole' ? 'render_black_hole' : 'simulate', args: r.args || { width: w, height: h, seconds }, reason: r.reason || 'Long renders use the CPU or GPU for several minutes.', risk: 'approve' });
     app.jev.approvals.whenDecided(r.approval_id, (decision, res) => {
       if (decision === 'approve' && res.job_id) go(res.job_id);
       else { st.textContent = decision === 'approve' ? 'Approved; the render runs in the background.' : 'Render cancelled.'; bar.hidden = true; btn.disabled = false; }
@@ -292,7 +327,9 @@ function followJob(jobId, btn) {
   const bar = $('#sci-job-bar');
   const t0 = performance.now();
   follow((since) => client.jobEvents(jobId, since), (ev) => {
-    if (ev.event === 'progress') {
+    if (ev.event === 'progress' && (ev.fraction === null || ev.fraction === undefined)) {
+      if (ev.message) st.textContent = `Rendering: ${ev.message}`;
+    } else if (ev.event === 'progress') {
       const pct = Math.round((Number(ev.fraction) || 0) * 100);
       bar.firstChild.style.width = `${pct}%`;
       bar.setAttribute('aria-valuenow', String(pct));
@@ -303,6 +340,7 @@ function followJob(jobId, btn) {
       for (const a of ev.artifacts || []) gallery.add(a);
       if (!ev.ok) st.textContent = `The render failed: ${ev.content || ''}`;
     } else if (ev.event === 'done') {
+      for (const x of ev.artifacts || []) gallery.add(x);
       const secs = ((performance.now() - t0) / 1000).toFixed(0);
       st.textContent = `Finished in ${secs} s. The files are below.`;
       app.notify('good', 'Render finished', `${secs} s on this computer`);

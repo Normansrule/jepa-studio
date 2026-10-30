@@ -1,8 +1,21 @@
 # The web demo tier
 
-The website (`site/`) trains a real LeJEPA model inside the browser tab. It is a demo: small
-enough to finish in a few minutes on a laptop CPU, faithful enough that the loss, the collapse
-detector and the evaluation behave like the desktop app. For real models, use the desktop app.
+The website (`site/`, published at <https://normansrule.github.io/jev-jepa-studio/>) is the same
+front end as the JEV Studio desktop app. In a browser it trains a real LeJEPA model inside the tab.
+It is a demo: small enough to finish in a few minutes on a laptop CPU, faithful enough that the
+loss, the collapse detector and the evaluation behave like the desktop app. For real models, use
+the desktop app.
+
+## JEV and Science on the website
+
+* **JEV**, the local AI agent, needs a language model served by Ollama on your computer and a
+  backend that can run code, so it only works in the desktop app. On the website the JEV tab says
+  so, links to the installers, and lists what JEV can do and its three risk levels. The page never
+  tries to contact a local port: the backend client exists only in the desktop app, and the site's
+  Content Security Policy (`connect-src 'self'`) would block it anyway.
+* **Science** works here: the black hole and the simulations are drawn live on your graphics card
+  with WebGL. Without WebGL the tab explains why and shows nothing else. Rendering long,
+  high-resolution videos needs the desktop app. Details: [jev/ui.md](jev/ui.md).
 
 ## What trains in the browser
 

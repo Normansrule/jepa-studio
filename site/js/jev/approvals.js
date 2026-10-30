@@ -157,7 +157,9 @@ export class Approvals {
       this.pending.delete(a.id);
       this.emit();
       this.renderPanel();
-      this.app.notify(decision === 'approve' ? 'good' : 'info', decision === 'approve' ? (remember ? 'Approved for this session' : 'Approved once') : 'Denied', describe(a.tool, a.args).exact || a.tool);
+      const what = describe(a.tool, a.args).exact || a.tool;
+      if (r && r.ok === false) this.app.notify('warn', r.status === 'failed' ? 'Approved, but it could not start' : `Already ${r.status || 'decided'}`, r.error || what);
+      else this.app.notify(decision === 'approve' ? 'good' : 'info', decision === 'approve' ? (remember ? 'Approved for this session' : 'Approved once') : 'Denied', r && r.note ? `${what}. Note: ${r.note}.` : what);
       try { this.onDecided(a, decision, r || {}); } catch (e) { console.error(e); }
       const w = this.waiters.get(a.id);
       if (w) { this.waiters.delete(a.id); try { w(decision, r || {}); } catch (e) { console.error(e); } }

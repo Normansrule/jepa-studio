@@ -32,6 +32,7 @@ export class JevClient {
 
   conversations() { return this.b.req('GET', '/api/jev/conversations'); }
   conversation(id) { return this.b.req('GET', `/api/jev/conversations/${enc(id)}`); }
+  exportConversation(id) { return this.b.blob(`/api/jev/conversations/${enc(id)}/export`); }
   deleteConversation(id) { return this.b.req('DELETE', `/api/jev/conversations/${enc(id)}`); }
   createConversation(model = null) { return this.b.req('POST', '/api/jev/conversations', model ? { model } : {}); }
 
