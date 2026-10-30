@@ -14,7 +14,8 @@ Tables
 Inspect it with any SQLite tool (`sqlite3 jev-data/jev.db "select * from approvals"`). Export a
 conversation with `export_conversation` (JSON + its files, zipped) and delete with
 `delete_conversation` (rows and workspace; the audit rows stay, with their arguments redacted).
-To remove everything JEV ever stored, delete the jev-data folder.
+`export_all` / `delete_all` do the same for everything at once (the app's Settings > Your data).
+To remove everything JEV ever stored, including settings.json, delete the jev-data folder.
 """
 from __future__ import annotations
 
@@ -315,3 +316,74 @@ class Store:
                 raise
         if ws.exists() and self.workspace_root in ws.parents:
             shutil.rmtree(ws, ignore_errors=True)
+
+    # ------------------------------------------------------------------ everything at once
+    def _workspace_dirs(self) -> list[tuple[str, Path]]:
+        """(name, folder) for every conversation workspace and the science job folder, all inside
+        workspace_root (anything else is skipped, so a custom workspace_root is never wiped wholesale)."""
+        out = []
+        names = [r[0] for r in self._x("SELECT workspace FROM conversations").fetchall()] + ["_science"]
+        for name in names:
+            p = (self.workspace_root / str(name)).resolve()
+            if self.workspace_root in p.parents and p.is_dir() and not p.is_symlink():
+                out.append((p.relative_to(self.workspace_root).as_posix(), p))
+        return out
+
+    def export_all(self, out_dir: str | Path, settings: dict | None = None) -> Path:
+        """Write <out_dir>/jev-data-<time>.zip: `jev-data.json` (every conversation with its turns,
+        messages, tool calls and artifacts; the whole audit log; imported models; the settings) and
+        `workspaces/<folder>/...` (every workspace file, without .venv / caches / symlinks)."""
+        convs = [self.conversation_json(c["id"]) for c in self.list_conversations()]
+        data = {"format": "jev-export/1", "exported": _now(), "schema_version": SCHEMA_VERSION,
+                "conversations": convs,
+                "approvals": [_row(r) for r in self._x("SELECT * FROM approvals ORDER BY created").fetchall()],
+                "models": self.list_models(), "settings": settings or {}}
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"jev-data-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("jev-data.json", json.dumps(data, indent=2, default=str))
+            for name, ws in self._workspace_dirs():
+                for dirpath, dirnames, filenames in os.walk(ws):
+                    dirnames[:] = [d for d in dirnames if d not in (".venv", ".tmp", "node_modules", "__pycache__")
+                                   and not (Path(dirpath) / d).is_symlink()]
+                    for fn in filenames:
+                        p = Path(dirpath) / fn
+                        if p.is_symlink() or not p.is_file():
+                            continue
+                        z.write(p, f"workspaces/{name}/" + p.relative_to(ws).as_posix())
+        return out
+
+    def delete_all(self, keep_audit_log: bool = False, before: float | None = None) -> dict:
+        """Delete every conversation (rows and workspace folders), the science outputs, the imported-model
+        records and, unless keep_audit_log, the audit-log rows created before `before` (so the approval
+        that asked for this deletion stays as the first row of the new log). Then VACUUM, so the
+        deleted rows do not linger in free pages of jev.db. Returns counts."""
+        dirs = self._workspace_dirs()
+        counts = {}
+        with self.lock:
+            self.db.execute("BEGIN")
+            try:
+                for t in ("messages", "tool_calls", "artifacts", "turns", "conversations", "models"):
+                    counts[t] = self.db.execute(f"DELETE FROM {t}").rowcount
+                if keep_audit_log:
+                    self.db.execute("UPDATE approvals SET args=? WHERE kind='tool'",
+                                    (json.dumps({"redacted": "all data deleted"}),))
+                    counts["approvals"] = 0
+                else:
+                    counts["approvals"] = self.db.execute(
+                        "DELETE FROM approvals WHERE created < ? AND status != 'pending'",
+                        (before if before is not None else _now(),)).rowcount
+                self.db.execute("COMMIT")
+            except Exception:
+                self.db.execute("ROLLBACK")
+                raise
+            try:
+                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self.db.execute("VACUUM")
+            except sqlite3.Error:
+                pass
+        for _, p in dirs:
+            shutil.rmtree(p, ignore_errors=True)
+        counts["workspaces"] = len(dirs)
+        return counts

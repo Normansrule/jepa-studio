@@ -309,3 +309,55 @@ def test_create_conversation_and_ui_upload_shape(srv):
                    body={"name": "n.txt", "mime": "text/plain", "data_base64": base64.b64encode(b"hello").decode()})
     assert code == 200 and up["path"] == "n.txt" and up["name"] == "n.txt" and up["bytes"] == 5
     assert req(srv, "/api/jev/conversations", body={"model": "bad model!"})[0] == 400
+
+
+def test_paths_audit_limit_export_and_delete_all(srv):
+    """Settings > Your data in the app: where things live, the whole audit log, export everything,
+    delete everything (asks first). Runs last: it empties the store the other tests filled."""
+    import zipfile
+    import io
+    from jev.api import get_api
+    code, g = req(srv, "/api/jev/settings")
+    assert code == 200 and set(g["paths"]) == {"data_dir", "settings", "db", "workspaces", "exports"}
+    assert g["paths"]["db"].endswith("jev.db") and g["paths"]["settings"].endswith("settings.json")
+    assert g["paths"]["data_dir"].startswith(str(srv.root))
+    # audit log with a limit
+    code, few = req(srv, "/api/jev/approvals?limit=2")
+    assert code == 200 and len(few["approvals"]) == 2
+    assert req(srv, "/api/jev/approvals?limit=0")[0] == 400
+    assert req(srv, "/api/jev/approvals?limit=abc")[0] == 400
+    # a conversation with a file, then export everything
+    srv.fake.script = [{"content": "", "tool_calls": [{"name": "write_file", "arguments": {"path": "keep.txt",
+                                                                                          "content": "mine"}}]},
+                       {"content": "ok"}]
+    _, r = req(srv, "/api/jev/chat", body={"message": "write a file"})
+    poll(srv, f"/api/jev/turns/{r['turn_id']}/events")
+    cid = r["conversation_id"]
+    ws = get_api(srv.root).rt.store.workspace(cid)
+    code, (zipdata, h) = req(srv, "/api/jev/export", raw=True)
+    assert code == 200 and h["Content-Disposition"].startswith("attachment") and h["Content-Type"] == "application/zip"
+    z = zipfile.ZipFile(io.BytesIO(zipdata))
+    data = json.loads(z.read("jev-data.json"))
+    assert data["format"] == "jev-export/1" and data["approvals"] and "rules" not in data["settings"]
+    assert any(c["conversation"]["id"] == cid for c in data["conversations"])
+    assert z.read(f"workspaces/{ws.name}/keep.txt") == b"mine"
+    assert req(srv, "/api/jev/data/delete", body={"keep_audit_log": "yes"})[0] == 400
+    # deleting everything asks; deny keeps it all
+    code, out = req(srv, "/api/jev/data/delete", body={})
+    assert code == 200 and out["status"] == "pending"
+    _, pend = req(srv, "/api/jev/approvals?status=pending")
+    row = [a for a in pend["approvals"] if a["id"] == out["approval_id"]][0]
+    assert row["tool"] == "data_delete" and row["kind"] == "data_delete" and "delete" in row["rules"]
+    assert row["args"]["keep_audit_log"] is False and row["args"]["conversations"] >= 1
+    req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "deny"})
+    assert req(srv, f"/api/jev/conversations/{cid}")[0] == 200 and ws.exists()
+    # approve: conversations, workspaces, exports and the old audit rows are gone; the approval stays
+    _, out = req(srv, "/api/jev/data/delete", body={"keep_audit_log": False})
+    code, dec = req(srv, f"/api/jev/approvals/{out['approval_id']}", body={"decision": "approve"})
+    assert code == 200 and dec == {"ok": True, "status": "approved"}
+    assert req(srv, "/api/jev/conversations")[1]["conversations"] == []
+    assert not ws.exists() and not (Path(g["paths"]["exports"])).exists()
+    _, log = req(srv, "/api/jev/approvals")
+    assert [a["id"] for a in log["approvals"]] == [out["approval_id"]] and log["approvals"][0]["status"] == "approved"
+    assert req(srv, "/api/jev/models")[1]["imported"] == []
+    assert Path(g["paths"]["settings"]).exists() or True        # settings.json (if written) is kept

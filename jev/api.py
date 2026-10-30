@@ -69,6 +69,18 @@ def gpu_info() -> dict:
     return info
 
 
+def _limit(raw, default: int = 500, top: int = 10000) -> int:
+    if raw in (None, ""):
+        return default
+    try:
+        n = int(raw)
+    except (TypeError, ValueError) as e:
+        raise HttpError(400, "limit must be a whole number") from e
+    if not 1 <= n <= top:
+        raise HttpError(400, f"limit must be between 1 and {top}")
+    return n
+
+
 def _model_name(name) -> str:
     if not isinstance(name, str) or not MODEL_NAME.match(name) or ".." in name:
         raise HttpError(400, "model name must look like llama3.1:8b or qwen2.5-coder:7b")
@@ -111,16 +123,20 @@ class JevApi:
             ("GET", ("models",)): lambda: {"models": rt.llm().tags(), "imported": rt.store.list_models()},
             ("POST", ("models", "pull")): lambda: self.model_pull(body),
             ("POST", ("models", "import")): lambda: self.model_import(body),
-            ("GET", ("settings",)): lambda: {**rt.settings.public(), "rules": describe_rules(rt.settings.resolved())},
+            ("GET", ("settings",)): lambda: {**rt.settings.public(), "rules": describe_rules(rt.settings.resolved()),
+                                             "paths": self.paths()},
             ("POST", ("settings",)): lambda: self.update_settings(body),
             ("POST", ("chat",)): lambda: rt.start_turn(body.get("message"), body.get("conversation_id"),
                                                       body.get("model"), body.get("attachments")),
             ("GET", ("conversations",)): lambda: {"conversations": rt.store.list_conversations()},
             ("POST", ("conversations",)): lambda: self.conversation_create(body),
             ("GET", ("approvals",)): lambda: {"approvals": [self._approval_json(a) for a in
-                                                            rt.broker.list(one("status"))]},
+                                                            rt.store.list_approvals(one("status"),
+                                                                                    _limit(one("limit")))]},
             ("GET", ("artifacts",)): lambda: {"artifacts": [artifact_json(a) for a in
                                                             rt.store.list_artifacts(one("conversation_id"))]},
+            ("GET", ("export",)): self.export_all,
+            ("POST", ("data", "delete")): lambda: self.data_delete(body),
             ("GET", ("jobs",)): lambda: {"jobs": [j.to_json() for j in list(rt.jobs.jobs.values())[-100:]]},
             ("POST", ("science", "blackhole")): lambda: self.science("blackhole", body),
             ("POST", ("science", "simulate")): lambda: self.science("simulate", body),
@@ -181,6 +197,13 @@ class JevApi:
                 "workspace_root": s["workspace_root"], "data_dir": s["data_dir"],
                 "sandbox": rt.sandbox.capabilities(), "network_allowed": s["network_allowed"], "gpu": gpu_info(),
                 "approval_rules": describe_rules(s)}
+
+    def paths(self) -> dict:
+        """Where everything lives on disk (shown in the app so you can back it up or inspect it)."""
+        s = self.rt.settings.resolved()
+        d = Path(s["data_dir"])
+        return {"data_dir": str(d), "settings": str(self.rt.settings.path), "db": str(self.rt.store.path),
+                "workspaces": s["workspace_root"], "exports": str(d / "exports")}
 
     def update_settings(self, body: dict) -> dict:
         out = self.rt.settings.update(body, api=True)
@@ -308,6 +331,43 @@ class JevApi:
                                                                                     "title": c["title"]},
                           f"Delete the conversation \"{c['title']}\", its messages and its workspace folder "
                           f"({n_files} files)", start)
+
+    def export_all(self) -> FileResponse:
+        rt = self.rt
+        out = rt.store.export_all(Path(rt.settings.resolved()["data_dir"]) / "exports",
+                                  {"file": rt.settings.file, "effective": rt.settings.public(), "paths": self.paths()})
+        return FileResponse(out, "application/zip", out.name, "attachment")
+
+    def data_delete(self, body: dict) -> dict:
+        """Delete all conversations, workspaces, science outputs, exports, imported-model records and (unless
+        keep_audit_log) the audit log. Asks first (the `delete` row). settings.json and the models in Ollama
+        stay: settings hold your approval rules, which no API may reset."""
+        rt = self.rt
+        keep = (body or {}).get("keep_audit_log", False)
+        if not isinstance(keep, bool):
+            raise HttpError(400, "keep_audit_log must be true or false")
+        before = time.time()
+        n_conv = len(rt.store.list_conversations())
+
+        def start():
+            for tid in list(rt.active.values()):
+                rt.cancel(tid)
+                rt.jobs.wait(tid, 10)
+            for j in list(rt.jobs.jobs.values()):
+                if j.kind.startswith("science_") and j.status in ("queued", "running", "waiting_approval"):
+                    rt.jobs.cancel(j.id)
+                    rt.jobs.wait(j.id, 10)
+            rt.store.delete_all(keep_audit_log=keep, before=before)
+            exports = Path(rt.settings.resolved()["data_dir"]) / "exports"
+            if exports.is_dir() and not exports.is_symlink():
+                shutil.rmtree(exports, ignore_errors=True)
+            return None
+        what = (f"Delete all of JEV's data: {n_conv} conversation(s) with their messages and workspace files, "
+                "science renders, exports, imported-model records" + ("" if keep else " and the audit log") +
+                ". settings.json and the models in Ollama are kept. This cannot be undone")
+        return self._gate("data_delete", "delete", "data_delete",
+                          {"keep_audit_log": keep, "conversations": n_conv,
+                           "data_dir": str(Path(rt.settings.resolved()["data_dir"]))}, what, start)
 
     def conversation_export(self, cid: str) -> FileResponse:
         out = self.rt.store.export_conversation(cid, Path(self.rt.settings.resolved()["data_dir"]) / "exports")
