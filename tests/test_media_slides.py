@@ -6,6 +6,13 @@ from PIL import Image
 from jev.media import common, images as I, slides as S
 from jev.media.common import MediaError
 
+try:
+    import matplotlib  # noqa: F401 - optional (the `media` extra): charts and equations
+    HAVE_MPL = True
+except ImportError:
+    HAVE_MPL = False
+needs_mpl = pytest.mark.skipif(not HAVE_MPL, reason="charts and equations need matplotlib (pip install 'jepa-studio[media]')")
+
 SPECS = [
     {"type": "title", "title": "What is a JEPA?", "subtitle": "Joint-Embedding Predictive Architectures"},
     {"type": "bullets", "title": "Bullets", "bullets": ["one", {"text": "two, indented", "level": 1},
@@ -19,7 +26,8 @@ SPECS = [
 
 
 @pytest.mark.parametrize("size", [S.FULL, S.PREVIEW])
-@pytest.mark.parametrize("spec", SPECS, ids=[s["type"] for s in SPECS])
+@pytest.mark.parametrize("spec", [pytest.param(s, id=s["type"], marks=[needs_mpl] if s["type"] in ("equation", "chart") else [])
+                                  for s in SPECS])
 def test_slide_sizes(spec, size):
     im = S.render_slide(spec, size, "dark")
     assert im.size == size and im.mode == "RGB"
@@ -62,6 +70,7 @@ def test_bad_specs_rejected():
         S.render_slide({"type": "equation", "equation": r"\frac{"}, S.PREVIEW)
 
 
+@needs_mpl
 def test_font_fallback_to_pillow_default(monkeypatch):
     monkeypatch.setattr(common, "_FONT_CANDIDATES", {})
     import matplotlib
@@ -84,6 +93,7 @@ def test_deck_png_and_pdf(tmp_path):
     assert Image.open(r["pngs"][0]).size == S.PREVIEW
 
 
+@needs_mpl
 def test_images_chart_diagram_card_sheet_edit():
     c = I.chart({"kind": "line", "series": [{"name": "a", "values": [1, 3, 2]}], "title": "T"}, (800, 450))
     assert c.size == (800, 450)

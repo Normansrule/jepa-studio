@@ -55,7 +55,7 @@ jobs:
           torch==2.14.0 torchvision==0.29.0
           --index-url https://download.pytorch.org/whl/cpu
       - name: Install jepa-studio and pytest
-        run: python -m pip install --disable-pip-version-check -e ".[onnx,video]" pytest==9.1.1
+        run: python -m pip install --disable-pip-version-check -e ".[onnx,video,media]" pytest==9.1.1
       - name: Standalone Node checks
         run: |
           node --version
