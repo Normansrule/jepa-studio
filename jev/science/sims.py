@@ -286,13 +286,13 @@ def wave_setup(p: dict):
 
 
 def wave_energy(u_new, u_old, c, dt, dx):
-    """Discrete energy of the leapfrog scheme at the half step (kinetic from the time difference,
-    potential from the average of forward differences); conserved to O(dt^2) oscillation."""
+    """Energy the leapfrog scheme conserves exactly (up to round-off) with fixed boundaries:
+    E^{n+1/2} = 1/2 sum ((u^{n+1} - u^n) / dt)^2 + c^2/2 sum grad(u^{n+1}) . grad(u^n)   (times dx^2),
+    with one-sided differences on the grid edges."""
     ut = (u_new - u_old) / dt
-    um = 0.5 * (u_new + u_old)
-    gx = np.diff(um, axis=1) / dx
-    gy = np.diff(um, axis=0) / dx
-    return 0.5 * dx * dx * ((ut * ut).sum() + c * c * ((gx * gx).sum() + (gy * gy).sum()))
+    gx = np.diff(u_new, axis=1) * np.diff(u_old, axis=1)
+    gy = np.diff(u_new, axis=0) * np.diff(u_old, axis=0)
+    return 0.5 * dx * dx * ((ut * ut).sum() + c * c * (gx.sum() + gy.sum()) / (dx * dx))
 
 
 def simulate_wave(p: dict, frames: int, cancelled=None):
@@ -398,8 +398,13 @@ def simulate_orbit(p: dict, cancelled=None):
 
     steps = int(round(orbits * T / dt))
     rec = max(1, steps // 3000)
+    def energy(x, v):
+        r = math.sqrt(x @ x)
+        # the extra Schwarzschild term is the potential -mu M h^2 / r^3 (h is conserved: central force)
+        return 0.5 * v @ v - mu / r - (mu * M_over * h * h / r ** 3 if gr else 0.0)
+
     xs, ts, Es = [x.copy()], [0.0], []
-    E0 = 0.5 * v @ v - mu / math.sqrt(x @ x)
+    E0 = energy(x, v)
     Es.append(E0)
     peri_t, peri_ang = [], []
     hist = []                                   # last three (r, angle) samples
@@ -430,7 +435,7 @@ def simulate_orbit(p: dict, cancelled=None):
         if i % rec == 0 or i == steps:
             xs.append(x.copy())
             ts.append(i * dt)
-            Es.append(0.5 * v @ v - mu / r)
+            Es.append(energy(x, v))
             if cancelled and cancelled():
                 raise Cancelled("simulation cancelled")
     xs, ts, Es = np.array(xs), np.array(ts), np.array(Es)
@@ -450,9 +455,28 @@ def simulate_orbit(p: dict, cancelled=None):
         p_semi = a * (1 - e * e) / M_over
         metrics.update({"p_over_M": p_semi, "precession_per_orbit_rad": float(adv.mean()) if adv.size else None,
                         "precession_1st_order_rad": 6 * math.pi / p_semi,
-                        "precession_2nd_order_rad": 6 * math.pi / p_semi + 1.5 * math.pi * (18 + e * e) / p_semi ** 2})
+                        "precession_orbit_equation_rad": binet_precession(p_semi, e)})
         analytic = None
     return {"t": ts, "x": xs, "E": Es, "analytic": analytic, "metrics": metrics, "a": a, "e": e, "gr": gr}
+
+
+def binet_precession(p_over_M: float, e: float, dphi: float = 1e-3) -> float:
+    """Reference periapsis advance per orbit from the Schwarzschild orbit equation in phi,
+    u'' + u = 1/p + 3 M u^2 (units M = 1), integrated with RK4 in phi (independent of the time-domain
+    run). 6 pi M / p is its first-order expansion."""
+    p = float(p_over_M)
+    y = np.array([(1 + e) / p, 0.0])
+
+    def f(y):
+        return np.array([y[1], -y[0] + 1 / p + 3 * y[0] ** 2])
+
+    phi, peri = 0.0, []
+    while len(peri) < 3 and phi < 40 * math.pi:
+        y2 = rk4(f, y, dphi)
+        if y[1] > 0 >= y2[1]:                      # du/dphi changes sign at a maximum of u
+            peri.append(phi + dphi * y[1] / (y[1] - y2[1]))
+        y, phi = y2, phi + dphi
+    return float(np.diff(peri).mean() - 2 * math.pi)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -557,10 +581,16 @@ def frames_pendulum(res, p, nframes):
         yield np.asarray(im)
 
 
+# ColorBrewer RdBu (11 classes, reversed: negative blue, positive red), interpolated to 256 entries
+_RDBU = [(5, 48, 97), (33, 102, 172), (67, 147, 195), (146, 197, 222), (209, 229, 240), (247, 247, 247),
+         (253, 219, 199), (244, 165, 130), (214, 96, 77), (178, 24, 43), (103, 0, 31)]
+
+
 def _diverging_lut():
-    from matplotlib import colormaps
-    cm = colormaps["RdBu_r"]
-    return (np.array([cm(i / 255)[:3] for i in range(256)]) * 255).astype(np.uint8)
+    a = np.array(_RDBU, float)
+    x = np.linspace(0, 1, len(a))
+    t = np.linspace(0, 1, 256)
+    return np.stack([np.interp(t, x, a[:, k]) for k in range(3)], -1).astype(np.uint8)
 
 
 def frames_wave(res, p, nframes):
@@ -633,12 +663,19 @@ def frames_lorenz(res, p, nframes):
 # ----------------------------------------------------------------------------------------------
 
 
-def summary_chart(kind, res, path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    with plt.rc_context(V.chart_style()):
-        fig, axes = plt.subplots(1, 2, figsize=(9, 3.2), dpi=110)
+def summary_chart(kind, res, path) -> bool:
+    """Two-panel PNG (energy error + a kind-specific panel). Needs matplotlib (optional, the `jev`
+    extra); returns False without it."""
+    try:
+        import matplotlib
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+    except ImportError:
+        return False
+    with matplotlib.rc_context(V.chart_style()):
+        fig = Figure(figsize=(9, 3.2), dpi=110)
+        FigureCanvasAgg(fig)
+        axes = fig.subplots(1, 2)
         c0, c1 = V.hexc(V.CAT[0]), V.hexc(V.CAT[1])
         ax = axes[0]
         if kind in ("nbody", "double_pendulum", "orbit") or (kind == "wave" and len(res.get("E", [])) > 0):
@@ -687,7 +724,7 @@ def summary_chart(kind, res, path):
             ax.grid(False)
         fig.tight_layout()
         fig.savefig(path)
-        plt.close(fig)
+    return True
 
 
 # ----------------------------------------------------------------------------------------------
@@ -738,10 +775,10 @@ def run(kind: str, params: dict, out_dir: Path, progress: Callable[[float, str],
         raise
     writer.close()
     chart = out_dir / f"{stem}_summary.png"
-    summary_chart(kind, res, chart)
-    metrics = {"kind": kind, "params": {k: v for k, v in p.items()}, **res["metrics"],
+    has_chart = summary_chart(kind, res, chart)
+    metrics = {"kind": kind, "params": dict(p), **res["metrics"], "summary_chart": has_chart,
                "timings": {"simulate_s": t_sim, "total_s": time.perf_counter() - t0}, "frames": nframes}
     mpath = out_dir / f"{stem}_metrics.json"
     mpath.write_text(json.dumps(metrics, indent=2, default=float))
     progress(1.0, "done")
-    return [vid, chart, mpath]
+    return [vid, chart, mpath] if has_chart else [vid, mpath]
