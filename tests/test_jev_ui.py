@@ -80,6 +80,26 @@ class FakeJev:
         ]
         self.conversations: list[dict] = []
         self.chats: list[dict] = []
+        self.calls: list[tuple[str, str, object]] = []        # (method, path?query, body) for the new routes
+        self.models = [
+            {"name": "qwen2.5:7b", "size_bytes": 4_683_087_332, "family": "qwen2", "parameter_size": "7.6B",
+             "quantization": "Q4_K_M", "digest": "sha256:845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"},
+            {"name": "llama3.2:3b", "size_bytes": 2_019_393_189, "family": "llama", "parameter_size": "3.2B",
+             "quantization": "Q4_K_M", "digest": "sha256:a80c4f17acd55265feec403c7aef86be0c25983ab279d83f3bcd3abbcb5b8b72"}]
+        self.imported: list[dict] = []
+        self.settings = {
+            "ollama_url": "http://127.0.0.1:11434", "allow_remote_ollama": False, "allow_cloud_models": False,
+            "default_model": "qwen2.5:7b", "workspace_root": "/home/me/JEV/jev-data/workspaces",
+            "limits": {"cpu_seconds": 120, "memory_mb": 2048, "wall_seconds": 300, "max_output_mb": 200, "max_file_mb": 500},
+            "network_allowed": False, "approval_rules": {}, "approval_timeout_s": 1800, "max_tool_rounds": 12,
+            "sandbox": {"isolation": "auto", "hide_home": True}}
+        self.rules = [
+            {"rule": "read", "default": "run", "action": "run", "covers": "tools with no side effects", "locked": False},
+            {"rule": "shell", "default": "ask", "action": "deny", "covers": "running shell commands", "locked": False},
+            {"rule": "model_download", "default": "ask", "action": "ask", "covers": "downloading a model (ollama pull)", "locked": False},
+            {"rule": "path_escape", "default": "deny", "action": "deny", "covers": "workspace-path arguments escaping", "locked": True}]
+        self.actions: dict[str, object] = {}       # approval id -> fn() run on approve, returns a job id or None
+        self.jobs: dict[str, list[dict]] = {}
         self.released = 0
         self.approved = False
         self.script = [
@@ -116,12 +136,17 @@ class FakeJev:
         if path == "/api/jev/status":
             return 200, {"version": "0.4.0", "ollama": {"url": "http://127.0.0.1:11434", "reachable": True, "version": "0.12.6"},
                          "default_model": "qwen2.5:7b", "models": ["qwen2.5:7b", "llama3.2:3b"], "tools": [],
-                         "workspace_root": "/tmp/jev", "sandbox": {"network_isolation": "enforced", "method": "bwrap", "limits": {}},
-                         "gpu": {"name": "Test GPU", "memory_gb": 8}}
-        if path == "/api/jev/models":
-            return 200, {"models": [
-                {"name": "qwen2.5:7b", "size_bytes": 4_683_087_332, "family": "qwen2", "parameter_size": "7.6B", "quantization": "Q4_K_M"},
-                {"name": "llama3.2:3b", "size_bytes": 2_019_393_189, "family": "llama", "parameter_size": "3.2B", "quantization": "Q4_K_M"}]}
+                         "workspace_root": "/tmp/jev", "data_dir": "/home/me/JEV/jev-data",
+                         "sandbox": {"network_isolation": "enforced", "method": "bwrap", "limits": {},
+                                     "filesystem": "read-only outside the workspace", "rlimits": "cpu, data, fsize, nproc, nofile",
+                                     "process_tree_kill": "session + descendant walk"},
+                         "gpu": {"name": "Test GPU", "memory_gb": 8}, "approval_rules": self.rules,
+                         "default_model": self.settings["default_model"]}
+        if path == "/api/jev/models" and method == "GET":
+            return 200, {"models": self.models, "imported": self.imported}
+        new = self._new_routes(method, path, query, body)
+        if new is not None:
+            return new
         if path == "/api/jev/conversations" and method == "GET":
             return 200, {"conversations": self.conversations}
         if path == "/api/jev/conversations" and method == "POST":
@@ -156,6 +181,11 @@ class FakeJev:
                 self.approved = True
             self.pending = [p for p in self.pending if p["id"] != aid]
             status = "approved" if body.get("decision") == "approve" else "denied"
+            if aid in self.actions:
+                fn = self.actions.pop(aid)
+                jid = fn() if status == "approved" else None
+                self.history.append({"id": aid, "created": time.time(), "tool": "x", "args": {}, "status": status})
+                return 200, {"ok": True, "status": status, **({"job_id": jid} if jid else {})}
             self.history.append({"id": aid, "created": time.time(), "tool": "run_shell" if aid == "a1" else "pull_model",
                                  "args": {"command": "ls ~/Videos"} if aid == "a1" else {"name": "llama3.1:8b"}, "status": status,
                                  "remember": body.get("remember")})
@@ -169,6 +199,82 @@ class FakeJev:
         if path.startswith("/api/jev/artifacts"):
             return 200, {"artifacts": [IMG, VID]}
         return 404, {"error": f"no fake route for {method} {path}"}
+
+
+    def _gate(self, aid, tool, args, fn):
+        """Like JevApi._gate: a pending approval (also in the pending list) whose approval runs fn."""
+        self.actions[aid] = fn
+        self.pending.append({"id": aid, "created": time.time(), "kind": tool, "tool": tool, "args": args,
+                             "reason": f"{tool} asks first", "risk": "approve", "status": "pending"})
+        return 200, {"approval_id": aid, "status": "pending"}
+
+    def _new_routes(self, method, path, query, body):
+        """Models, settings, export / delete all, model jobs (docs/jev/api.md)."""
+        q = "&".join(f"{k}={v[0]}" for k, v in sorted(query.items()))
+        if path.startswith("/api/jev/models") or path.startswith("/api/jev/settings") or path.startswith("/api/jev/data") \
+                or path == "/api/jev/export" or (path == "/api/jev/approvals" and method == "GET"):
+            self.calls.append((method, path + (f"?{q}" if q else ""), body))
+        aid = f"m{len(self.actions) + len(self.calls)}"
+        if path == "/api/jev/settings" and method == "GET":
+            return 200, {**self.settings, "rules": self.rules, "paths": {
+                "data_dir": "/home/me/JEV/jev-data", "settings": "/home/me/JEV/jev-data/settings.json",
+                "db": "/home/me/JEV/jev-data/jev.db", "workspaces": self.settings["workspace_root"],
+                "exports": "/home/me/JEV/jev-data/exports"}}
+        if path == "/api/jev/settings" and method == "POST":
+            bad = [k for k in body if k not in ("default_model", "limits", "network_allowed", "ollama_url")]
+            if bad:
+                return 400, {"error": f"these settings can only be changed by editing settings.json: {bad}"}
+            if "ollama_url" in body and not urlparse(body["ollama_url"]).hostname in ("127.0.0.1", "localhost", "::1"):
+                return 400, {"error": "ollama_url is not on this machine"}
+            for k, v in body.items():
+                self.settings[k] = {**self.settings[k], **v} if k == "limits" else v
+            return 200, dict(self.settings)
+        if path == "/api/jev/models/pull" and method == "POST":
+            name = body["name"]
+
+            def pull():
+                self.jobs["jp"] = [{"event": "start"}, {"event": "progress", "fraction": 0.5, "message": "pulling 4.7 GB"},
+                                   {"event": "done", "text": f"Pulled {name}."}]
+                self.models.append({"name": name, "size_bytes": 4_700_000_000, "family": "qwen2", "parameter_size": "7.6B",
+                                    "quantization": "Q4_K_M", "digest": "sha256:" + "ab" * 32})
+                return "jp"
+            return self._gate(aid, "model_pull", {"name": name}, pull)
+        if path == "/api/jev/models/import" and method == "POST":
+            name, gguf = body["name"], body["gguf_path"]
+            sha = "9f" * 32
+
+            def imp():
+                self.jobs["ji"] = [{"event": "progress", "fraction": 0.0, "message": "computing SHA-256"},
+                                   {"event": "done", "text": f"Imported as {name} (sha256 {sha}).", "sha256": sha}]
+                self.models.append({"name": f"{name}:latest", "size_bytes": 1_000_000, "family": "llama", "quantization": "Q4_K_M",
+                                    "digest": "sha256:" + "cd" * 32})
+                self.imported.append({"name": name, "path": gguf, "sha256": sha, "bytes": 1_000_000, "created": time.time()})
+                return "ji"
+            return self._gate(aid, "model_import", {"name": name, "gguf_path": gguf, "bytes": 1_000_000}, imp)
+        if path.startswith("/api/jev/models/") and method == "DELETE":
+            from urllib.parse import unquote
+            name = unquote(path.split("/api/jev/models/", 1)[1])
+
+            def rm():
+                self.jobs["jd"] = [{"event": "done", "text": f"Deleted {name} from Ollama."}]
+                self.models = [m for m in self.models if m["name"] != name]
+                return "jd"
+            return self._gate(aid, "model_delete", {"name": name}, rm)
+        if path.startswith("/api/jev/jobs/") and path.endswith("/events"):
+            jid = path.split("/")[4]
+            since = int(query.get("since", ["0"])[0])
+            ev = self.jobs.get(jid, [])
+            return 200, {"events": ev[since:since + 1], "next": since + 1, "status": "done" if since + 1 >= len(ev) else "running"}
+        if path == "/api/jev/export":
+            return 200, (b"PK\x05\x06" + b"\0" * 18, "application/zip")
+        if path == "/api/jev/data/delete" and method == "POST":
+            def wipe():
+                self.conversations = []
+                self.history = []
+                return None
+            return self._gate(aid, "data_delete", {"keep_audit_log": body.get("keep_audit_log"), "conversations": 0,
+                                                   "data_dir": "/home/me/JEV/jev-data"}, wipe)
+        return None
 
 
 def _route(fake: FakeJev):
@@ -271,11 +377,19 @@ def wait_until(page, fn, timeout=30.0, what="the page"):
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def desktop_page(browser, fake, *, width=1280, height=860, scheme="light", hash_=""):
+def desktop_page(browser, fake, *, width=1280, height=860, scheme="light", hash_="", gguf=None):
     ctx = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme, reduced_motion="reduce",
-                              device_scale_factor=1)
+                              device_scale_factor=1, accept_downloads=True)
     ctx.add_init_script("Object.defineProperty(window, '__JEPA_DESKTOP__', {value: Object.freeze(%s)});"
                         % json.dumps({"port": PORT, "token": TOKEN}))
+    if gguf is not None:
+        # the shell's withGlobalTauri API, stubbed: pick_gguf_file answers with a path chosen in the
+        # "native dialog" (the page never supplies one); every invoke is recorded
+        ctx.add_init_script("""window.__invoked = [];
+            window.__TAURI__ = {core: {invoke: async (cmd, args) => {
+              window.__invoked.push([cmd, args === undefined ? null : args]);
+              if (cmd === 'pick_gguf_file') return %s;
+              return null; }}};""" % json.dumps(gguf))
     page = ctx.new_page()
     con = Console(page)
     page.route("**/*", _route(fake))
@@ -609,5 +723,270 @@ def test_open_a_saved_conversation(browser):
     assert page.locator("#jev-log .msg").count() == 0 and page.is_visible("#jev-starters")
     assert page.text_content("#jev-conv-title") == "New conversation"
     assert page.evaluate("() => document.activeElement.id") == "jev-input"
+    con.check()
+    ctx.close()
+
+
+# ------------------------------------------------------------------ Models, Settings, audit log
+
+def dialog_open(page):
+    return page.evaluate("() => document.getElementById('jev-approval').open")
+
+
+def approve_in_dialog(page, title):
+    wait_until(page, lambda: dialog_open(page), what=f"approval dialog: {title}")
+    assert page.text_content("#appr-title") == title
+    page.click("#appr-once")
+    wait_until(page, lambda: not dialog_open(page), what="dialog closed")
+
+
+def test_models_panel_list_default_delete_pull_import(browser):
+    fake = FakeJev()
+    gguf = "/home/me/models/My-Model.Q4_K_M.gguf"
+    ctx, page, con = desktop_page(browser, fake, gguf=gguf)
+    wait_until(page, lambda: page.input_value("#jev-model") == "qwen2.5:7b", what="models loaded")
+    # the composer's button and the strip's button open the same panel
+    page.click("#jev-pull-btn")
+    assert page.is_visible("#jev-models")
+    assert page.get_attribute("#jev-pull-btn", "aria-expanded") == "true" == page.get_attribute("#jev-models-btn", "aria-expanded")
+    rows = page.locator("#jev-model-list .model-row")
+    wait_until(page, lambda: rows.count() == 2, what="two installed models")
+    q = page.locator(".model-row[data-model='qwen2.5:7b']").inner_text()
+    assert "4.7 GB" in q and "7.6B" in q and "Q4_K_M" in q and "qwen2" in q and "digest 845dbda0ea48" in q and "Default" in q
+    assert page.is_disabled(".model-row[data-model='qwen2.5:7b'] button >> text=Default")
+    # examples sized by the reported GPU (8 GB): the 6-11 GB tier first, then the small one
+    ex = page.text_content("#jev-pull-examples")
+    assert "your GPU has 8 GB" in ex and "Examples" in ex
+    tiers = page.locator("#jev-pull-examples .example-list").evaluate_all("(l) => l.map((u) => u.getAttribute('aria-label'))")
+    assert tiers == ["6 to 11 GB of GPU memory", "Small: CPU only or under 6 GB of GPU memory"]
+    # make llama3.2:3b the default
+    page.click(".model-row[data-model='llama3.2:3b'] button >> text=Make default")
+    wait_until(page, lambda: ("POST", "/api/jev/settings", {"default_model": "llama3.2:3b"}) in fake.calls, what="default POST")
+    wait_until(page, lambda: "Default" in page.locator(".model-row[data-model='llama3.2:3b'] .tag").all_text_contents(), what="tag moved")
+    wait_until(page, lambda: page.input_value("#jev-model") == "llama3.2:3b", what="composer uses the new default")
+    clear_toasts(page)
+    # delete asks; approving runs the job and the row goes away
+    page.click(".model-row[data-model='llama3.2:3b'] button >> text=Delete…")
+    wait_until(page, lambda: dialog_open(page), what="delete dialog")
+    assert page.text_content("#appr-exact") == "llama3.2:3b"
+    assert "DELETE" in [c[0] for c in fake.calls] and ("DELETE", "/api/jev/models/llama3.2%3A3b", None) in fake.calls
+    approve_in_dialog(page, "Allow JEV to delete a model?")
+    wait_until(page, lambda: rows.count() == 1, what="model removed from the list")
+    wait_until(page, lambda: "Deleted llama3.2:3b" in page.text_content("#jev-models-status"), what="delete status")
+    # download: an example fills the name; the request asks; progress then the new row
+    page.click("#jev-pull-examples .example >> text=qwen2.5-coder:7b")
+    assert page.input_value("#jev-pull-name") == "qwen2.5-coder:7b"
+    page.click("#jev-pull-go")
+    wait_until(page, lambda: dialog_open(page), what="pull dialog")
+    assert page.text_content("#appr-exact") == "qwen2.5-coder:7b"
+    approve_in_dialog(page, "Allow JEV to download a model?")
+    wait_until(page, lambda: "Pulled qwen2.5-coder:7b." in page.text_content("#jev-pull-status"), what="pull done")
+    wait_until(page, lambda: page.locator(".model-row[data-model='qwen2.5-coder:7b']").count() == 1, what="pulled model listed")
+    page.fill("#jev-pull-name", "../../etc")
+    page.click("#jev-pull-go")
+    assert "Type a model name" in page.text_content("#jev-pull-status")
+    # import: the native dialog (stubbed) returns the path; the page only forwards it
+    page.click("#jev-gguf-pick")
+    wait_until(page, lambda: page.is_visible("#jev-gguf-form"), what="import form")
+    assert page.evaluate("() => window.__invoked.filter(([c]) => c === 'pick_gguf_file')") == [["pick_gguf_file", None]]
+    assert page.text_content("#jev-gguf-path") == gguf and page.input_value("#jev-gguf-name") == "my-model.q4_k_m"
+    page.fill("#jev-gguf-name", "bad name!")
+    page.click("#jev-gguf-go")
+    assert page.is_visible("#jev-gguf-name-error") and page.get_attribute("#jev-gguf-name", "aria-invalid") == "true"
+    assert not any(c[1] == "/api/jev/models/import" for c in fake.calls)
+    page.fill("#jev-gguf-name", "my-model")
+    page.click("#jev-gguf-go")
+    wait_until(page, lambda: dialog_open(page), what="import dialog")
+    assert ("POST", "/api/jev/models/import", {"gguf_path": gguf, "name": "my-model"}) in fake.calls
+    assert page.text_content("#appr-exact") == f"{gguf}  as  my-model"
+    approve_in_dialog(page, "Allow JEV to import a model file?")
+    wait_until(page, lambda: page.is_visible("#jev-gguf-sha"), what="recorded SHA-256")
+    assert page.text_content("#jev-gguf-sha-value") == "9f" * 32
+    wait_until(page, lambda: "imported file SHA-256 " + "9f" * 32 in page.locator(".model-row[data-model='my-model:latest']").inner_text(),
+               what="SHA-256 in the list")
+    review_shot(page, "jev-models-1280.png", full_page=True)
+    con.check()
+    ctx.close()
+
+
+def test_models_panel_without_shell_and_cpu_only(browser):
+    """No __TAURI__ (or no GPU): import explains the terminal route; examples are the small tier."""
+    fake = FakeJev()
+    orig = fake._handle
+
+    def cpu(method, path, query, body):
+        status, payload = orig(method, path, query, body)
+        if path == "/api/jev/status":
+            payload = {**payload, "gpu": {"cuda": False, "mps": False, "devices": []}}
+        return status, payload
+    fake._handle = cpu
+    ctx, page, con = desktop_page(browser, fake)
+    page.click("#jev-models-btn")
+    wait_until(page, lambda: page.locator("#jev-model-list .model-row").count() == 2, what="models")
+    assert page.is_disabled("#jev-gguf-pick") and "jev models import" in page.text_content("#jev-gguf-pick-why")
+    assert "no GPU was found" in page.text_content("#jev-pull-examples")
+    assert page.locator("#jev-pull-examples .example-list").count() == 1
+    assert "OLLAMA_MODELS" in page.text_content("#jev-models") and "~/.ollama/models" in page.text_content("#jev-models")
+    page.click("[data-close-panel=jev-models]")
+    assert not page.is_visible("#jev-models") and page.get_attribute("#jev-models-btn", "aria-expanded") == "false"
+    con.check()
+    ctx.close()
+
+
+def test_settings_panel_validation_save_data_and_rules(browser):
+    fake = FakeJev()
+    ctx, page, con = desktop_page(browser, fake)
+    page.click("#jev-settings-btn")
+    wait_until(page, lambda: page.input_value("#set-ollama-url") == "http://127.0.0.1:11434", what="settings loaded")
+    assert page.input_value("#set-wall-seconds") == "300" and page.input_value("#set-memory-mb") == "2048"
+    assert page.input_value("#set-default-model") == "qwen2.5:7b"
+    assert page.is_disabled("#set-save")                                  # nothing changed yet
+    # limits: out of range -> message next to the field, Save disabled
+    page.fill("#set-wall-seconds", "0")
+    assert page.is_visible("#set-wall-seconds-error") and "1 to 86,400" in page.text_content("#set-wall-seconds-error")
+    assert page.get_attribute("#set-wall-seconds", "aria-invalid") == "true" and page.is_disabled("#set-save")
+    page.fill("#set-memory-mb", "10")
+    assert "64 to 1,048,576" in page.text_content("#set-memory-mb-error")
+    page.fill("#set-memory-mb", "2048")
+    page.fill("#set-wall-seconds", "600")
+    assert not page.is_visible("#set-wall-seconds-error") and not page.is_disabled("#set-save")
+    # a remote Ollama: refused unless "allow remote" is ticked, then a warning, and still blocked
+    # because allow_remote_ollama is off in the file (the app cannot turn it on)
+    page.fill("#set-ollama-url", "http://10.0.0.5:11434")
+    assert "not this computer" in page.text_content("#set-ollama-url-error") and page.is_disabled("#set-save")
+    assert not page.is_visible("#set-remote-warn")
+    page.check("#set-allow-remote", force=True)
+    assert page.is_visible("#set-remote-warn") and "leave this computer" in page.text_content("#set-remote-warn")
+    assert "allow_remote_ollama" in page.text_content("#set-ollama-url-error") and page.is_disabled("#set-save")
+    assert "/home/me/JEV/jev-data/settings.json" in page.text_content("#set-ollama-url-error")
+    page.fill("#set-ollama-url", "not a url")
+    assert "full address" in page.text_content("#set-ollama-url-error")
+    page.fill("#set-ollama-url", "http://localhost:11434/")
+    page.uncheck("#set-allow-remote", force=True)
+    assert not page.is_visible("#set-ollama-url-error")
+    # network: the switch explains it; a warning appears when on
+    assert "still ask every time" in page.text_content("#set-network-hint")
+    page.check("#set-network", force=True)
+    assert page.is_visible("#set-network-warn")
+    review_shot(page, "jev-settings-1280.png", full_page=True)
+    page.click("#set-save")
+    wait_until(page, lambda: any(c[:2] == ("POST", "/api/jev/settings") for c in fake.calls), what="settings POST")
+    sent = [c[2] for c in fake.calls if c[:2] == ("POST", "/api/jev/settings")][-1]
+    assert sent == {"ollama_url": "http://localhost:11434", "limits": {"wall_seconds": 600}, "network_allowed": True}
+    wait_until(page, lambda: "Saved" in page.text_content("#set-status"), what="saved")
+    assert page.is_disabled("#set-save")
+    # what the sandbox enforces, where the data is, the read-only rules table
+    caps = page.text_content("#set-caps")
+    assert "Network isolation" in caps and "enforced" in caps and "read-only outside the workspace" in caps
+    paths = page.locator("#set-paths code").all_text_contents()
+    assert "/home/me/JEV/jev-data/jev.db" in paths and "/home/me/JEV/jev-data/settings.json" in paths
+    assert page.locator("#set-paths .copy-btn").count() == len(paths)
+    assert page.locator("#set-rules tr").count() == 4
+    assert page.locator("#set-rules tr[data-rule=path_escape] .tag").inner_text() == "Locked"
+    shell = page.locator("#set-rules tr[data-rule=shell]").inner_text()
+    assert "Refused" in shell and "default: Asks first" in shell
+    assert "allow_remote_ollama" in page.text_content("#set-file-only")
+    assert page.locator("#jev-settings input:not([type=checkbox]), #jev-settings select").evaluate_all(
+        "(l) => l.every((n) => n.id && document.querySelector(`label[for='${n.id}']`))")
+    # export everything: a zip download, no navigation
+    with page.expect_download() as dl:
+        page.click("#set-export")
+    assert dl.value.suggested_filename.startswith("jev-data-") and dl.value.suggested_filename.endswith(".zip")
+    # delete everything: asks; Esc denies; then approve with the audit log kept
+    page.click("#set-delete")
+    wait_until(page, lambda: dialog_open(page), what="delete-all dialog")
+    assert page.text_content("#appr-title") == "Allow JEV to delete all of its data?"
+    assert "and the audit log" in page.text_content("#appr-what")
+    page.keyboard.press("Escape")
+    wait_until(page, lambda: "Nothing was deleted" in page.text_content("#set-data-status"), what="denied")
+    page.check("#set-keep-audit", force=True)
+    page.click("#set-delete")
+    assert ("POST", "/api/jev/data/delete", {"keep_audit_log": True}) in fake.calls
+    wait_until(page, lambda: dialog_open(page), what="delete-all dialog again")
+    assert "and the audit log" not in page.text_content("#appr-what")
+    approve_in_dialog(page, "Allow JEV to delete all of its data?")
+    wait_until(page, lambda: "was deleted" in page.text_content("#set-data-status"), what="deleted")
+    con.check()
+    ctx.close()
+
+
+def test_audit_log_filters_and_csv(browser, tmp_path):
+    fake = FakeJev()
+    day = 86400
+    now = time.time()
+    fake.history = [
+        {"id": "h1", "created": now - 3 * day, "tool": "run_python", "args": {"code": "print(1)"}, "status": "auto_run", "decided_by": "policy"},
+        {"id": "h2", "created": now - 2 * day, "tool": "run_shell", "args": {"command": "=HYPERLINK(\"x\")"}, "status": "approved", "decided_by": "user"},
+        {"id": "h3", "created": now - 1 * day, "tool": "model_pull", "args": {"name": "llama3.1:8b"}, "status": "denied", "decided_by": "user"},
+        {"id": "h4", "created": now, "tool": "write_file", "args": {"path": "../x"}, "status": "auto_deny", "decided_by": "policy"},
+        {"id": "h5", "created": now, "tool": "run_shell", "args": {"command": "ls"}, "status": "expired", "decided_by": "timeout"},
+    ]
+    ctx, page, con = desktop_page(browser, fake)
+    page.click("#jev-approvals-btn")
+    body = page.locator("#jev-history tr")
+    wait_until(page, lambda: body.count() == 5, what="five audit rows")
+    assert ("GET", "/api/jev/approvals?limit=5000", None) in fake.calls
+    assert page.text_content("#audit-count") == "5 of 5 decisions"
+    words = page.locator("#jev-history .appr-status").all_text_contents()
+    assert "Ran automatically" in words and "Refused by policy" in words and any(w.startswith("Expired") for w in words)
+    assert page.locator("#audit-tool option").all_text_contents() == ["All tools", "model_pull", "run_python", "run_shell", "write_file"]
+    page.select_option("#audit-decision", "denied")
+    assert body.count() == 1 and "llama3.1:8b" in body.first.inner_text()
+    page.select_option("#audit-decision", "")
+    page.select_option("#audit-tool", "run_shell")
+    assert body.count() == 2 and page.text_content("#audit-count") == "2 of 5 decisions"
+    page.select_option("#audit-tool", "")
+    days = page.locator("#jev-history tr").evaluate_all("(l) => l.map((r) => r.dataset.day)")
+    page.fill("#audit-from", sorted(days)[2])                  # the last three days
+    page.dispatch_event("#audit-from", "change")
+    assert body.count() == 3
+    page.fill("#audit-to", sorted(days)[2])
+    page.dispatch_event("#audit-to", "change")
+    assert body.count() == 1 and "model_pull" in body.first.inner_text()
+    page.select_option("#audit-decision", "approved")
+    assert "No decisions match" in body.first.inner_text() and page.is_disabled("#audit-csv")
+    page.click("#audit-reset")
+    assert body.count() == 5
+    page.select_option("#audit-tool", "run_shell")
+    with page.expect_download() as dl:
+        page.click("#audit-csv")
+    out = tmp_path / "audit.csv"
+    dl.value.save_as(out)
+    import csv
+    rows = list(csv.DictReader(out.open(newline="", encoding="utf-8")))
+    assert dl.value.suggested_filename.startswith("jev-audit-") and [r["id"] for r in rows] == ["h5", "h2"]
+    assert rows[1]["status"] == "approved" and rows[1]["created"].endswith("Z")
+    assert rows[1]["args"].startswith("'{") or rows[1]["args"].startswith("{")
+    assert '"command"' in rows[1]["args"] and "HYPERLINK" in rows[1]["args"]
+    assert all(not r[k].startswith(("=", "+", "-", "@")) for r in rows for k in r)     # no spreadsheet formulas
+    review_shot(page, "jev-audit-1280.png", full_page=True)
+    con.check()
+    ctx.close()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_new_panels_fit_a_phone(browser, scheme):
+    fake = FakeJev()
+    ctx, page, con = desktop_page(browser, fake, width=375, height=740, scheme=scheme, gguf="/home/me/m.gguf")
+    for btn, panel in (("#jev-models-btn", "#jev-models"), ("#jev-settings-btn", "#jev-settings"), ("#jev-approvals-btn", "#jev-approvals")):
+        page.click(btn)
+        assert page.is_visible(panel)
+    wait_until(page, lambda: page.locator("#jev-model-list .model-row").count() == 2, what="models")
+    wait_until(page, lambda: page.locator("#set-rules tr").count() == 4, what="rules")
+    page.click("#jev-gguf-pick")
+    wait_until(page, lambda: page.is_visible("#jev-gguf-form"), what="import form")
+    page.fill("#set-ollama-url", "http://10.0.0.5:11434")
+    page.check("#set-allow-remote", force=True)
+    page.wait_for_timeout(200)
+    no_hscroll(page, 375)
+    small = json.loads(page.evaluate("""() => JSON.stringify([...document.querySelectorAll(
+        '#jev-models :is(.btn, .example, select, input), #jev-settings :is(.btn, select, input:not([type=checkbox])), #jev-approvals :is(.btn, select, input)')]
+        .filter((n) => n.offsetParent !== null)
+        .map((n) => [n.id || n.className, Math.round(n.getBoundingClientRect().height)])
+        .filter(([, h]) => h < 44))"""))
+    assert not small, f"touch targets under 44 px: {small}"
+    clear_toasts(page)
+    for panel in ("jev-models", "jev-settings", "jev-approvals"):
+        review_shot(page.locator(f"#{panel}"), f"jev-375-{panel}-{scheme}.png")
     con.check()
     ctx.close()

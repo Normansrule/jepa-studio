@@ -8,7 +8,8 @@
 //!    script runs, and the page CSP narrowed to that one backend port (csp.rs).
 //! 5. Kills the backend when the main window goes away or the app exits.
 //!
-//! The web view gets exactly two commands: `pick_data_folder` and `backend_status`.
+//! The web view gets exactly three commands: `pick_data_folder`, `pick_gguf_file` and `backend_status`.
+//! None of them takes a path from JavaScript: paths come only from the native dialogs.
 //! A background thread also checks every few seconds whether a local Ollama answers on loopback
 //! (ollama.rs); the result is part of `backend_status` and shown in the setup window.
 
@@ -106,6 +107,33 @@ async fn pick_data_folder(window: WebviewWindow, state: State<'_, SharedState>) 
     let Some(picked) = rx.recv().await.flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let canon = backend::append_allowed(&allowed, &path)?;
+    Ok(Some(canon.to_string_lossy().into_owned()))
+}
+
+/// Opens the native file picker filtered to `.gguf`, checks the choice is a real GGUF file (regular
+/// file, `.gguf` extension, GGUF magic bytes), grants the backend that one file (a line in the
+/// allowed-folders file, exactly like a picked folder but covering only the file) and returns its
+/// canonical path, or `null` if the user cancelled. The page then asks the backend to import it,
+/// which is itself an approval. Like `pick_data_folder`, JS cannot name the path.
+#[tauri::command]
+async fn pick_gguf_file(window: WebviewWindow, state: State<'_, SharedState>) -> Result<Option<String>, String> {
+    if window.label() != MAIN {
+        return Err("not allowed from this window".into());
+    }
+    let allowed = state.allowed_file.lock().unwrap().clone().ok_or("the backend is not running yet")?;
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    window
+        .dialog()
+        .file()
+        .set_title("Choose a GGUF model file to import into Ollama")
+        .add_filter("GGUF model", &["gguf", "GGUF"])
+        .set_parent(&window)
+        .pick_file(move |p| {
+            let _ = tx.try_send(p);
+        });
+    let Some(picked) = rx.recv().await.flatten() else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let canon = backend::append_allowed_gguf(&allowed, &path)?;
     Ok(Some(canon.to_string_lossy().into_owned()))
 }
 
@@ -451,7 +479,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(shared)
         .register_uri_scheme_protocol("jepa-setup", |_ctx, req| splash_protocol(req.uri().path()))
-        .invoke_handler(tauri::generate_handler![pick_data_folder, backend_status])
+        .invoke_handler(tauri::generate_handler![pick_data_folder, pick_gguf_file, backend_status])
         .setup(|app| {
             let handle = app.handle().clone();
             if let Err(e) = open_setup_window(&handle) {

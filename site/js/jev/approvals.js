@@ -5,8 +5,9 @@
 // answers: Approve once, Approve for this session, Deny. Esc (the dialog's cancel) means Deny.
 // A "N waiting" badge stays in the tab bar and the JEV status strip until every request is
 // answered, and the Approvals panel lists pending requests plus the audit history.
-import { el, clear, $ } from '../ui/dom.js';
+import { el, clear, $, download } from '../ui/dom.js';
 import { icon, riskBadge } from './icons.js';
+import { filterAudit, toCsv, dayOf } from './audit.js';
 
 const SHELL = /(^|_)(shell|command|exec|terminal)($|_)|run_shell/;
 
@@ -23,6 +24,12 @@ export function describe(tool, args = {}) {
   }
   if (/import/.test(t) && (a.gguf_path || a.path)) {
     return { title: 'Allow JEV to import a model file?', what: 'This registers a GGUF file from your computer with Ollama under a new name.', exact: `${s(a.gguf_path ?? a.path)}${a.name ? `  as  ${s(a.name)}` : ''}`, exactLabel: 'File and name' };
+  }
+  if (t === 'data_delete') {
+    return { title: 'Allow JEV to delete all of its data?', what: `This deletes every conversation, its messages and workspace files, science renders, exports and imported-model records${a.keep_audit_log ? '' : ', and the audit log'}. settings.json and the models in Ollama stay. It cannot be undone.`, exact: s(a.data_dir || 'jev-data'), exactLabel: 'Data folder' };
+  }
+  if (/model/.test(t) && /delete|remove/.test(t)) {
+    return { title: 'Allow JEV to delete a model?', what: 'This removes the model from Ollama, including its files on disk (unless another model shares them). You can download it again later.', exact: s(a.name ?? a.model), exactLabel: 'Model' };
   }
   if (/delete|remove/.test(t)) {
     const target = a.name ?? a.model ?? a.path ?? a.conversation_id ?? a.id;
@@ -47,8 +54,10 @@ export function describe(tool, args = {}) {
 const STATUS_WORD = {
   pending: ['clock', 'Waiting'], approved: ['check', 'Approved'], approve: ['check', 'Approved'], allowed: ['check', 'Approved'],
   denied: ['cross', 'Denied'], deny: ['cross', 'Denied'], refused: ['cross', 'Refused by policy'], expired: ['clock', 'Expired'],
-  auto: ['check', 'Ran automatically'], cancelled: ['cross', 'Cancelled'],
+  auto: ['check', 'Ran automatically'], auto_run: ['check', 'Ran automatically'], remembered: ['check', 'Approved earlier this session'],
+  auto_deny: ['cross', 'Refused by policy'], cancelled: ['cross', 'Cancelled'], failed: ['warn', 'Failed to start'],
 };
+const HISTORY_ROWS = 500;     // rows drawn at once; the CSV has every match
 
 export class Approvals {
   constructor(app, client, { onDecided = () => {}, canAutoOpen = () => true } = {}) {
@@ -63,7 +72,9 @@ export class Approvals {
     this.listeners = new Set();
     this.waiters = new Map();          // id -> fn(decision, response), for callers that started the action
     this.dlg = $('#jev-approval');
+    this.history = null;
     this.bind();
+    this.bindAudit();
   }
 
   onChange(f) { this.listeners.add(f); }
@@ -191,26 +202,75 @@ export class Approvals {
     box.append(ul);
   }
 
-  async renderHistory() {
+  // ------------------------------------------------------------------ audit log (History)
+  bindAudit() {
+    for (const id of ['#audit-decision', '#audit-tool', '#audit-from', '#audit-to']) {
+      const n = $(id);
+      if (n) n.addEventListener('change', () => this.renderHistory({ refetch: false }));
+    }
+    const csv = $('#audit-csv');
+    if (csv) csv.addEventListener('click', () => this.exportCsv());
+    const reset = $('#audit-reset');
+    if (reset) reset.addEventListener('click', () => {
+      for (const id of ['#audit-decision', '#audit-tool', '#audit-from', '#audit-to']) $(id).value = '';
+      this.renderHistory({ refetch: false });
+    });
+  }
+
+  auditFilter() {
+    const v = (id) => ($(id) ? $(id).value : '');
+    return { decision: v('#audit-decision'), tool: v('#audit-tool'), from: v('#audit-from'), to: v('#audit-to') };
+  }
+
+  filtered() {
+    return filterAudit(this.history || [], this.auditFilter()).sort((x, y) => (y.created || 0) - (x.created || 0));
+  }
+
+  fillToolFilter() {
+    const sel = $('#audit-tool');
+    if (!sel) return;
+    const cur = sel.value;
+    clear(sel).append(el('option', { attrs: { value: '' }, text: 'All tools' }));
+    for (const t of [...new Set((this.history || []).map((a) => String(a.tool || '')).filter(Boolean))].sort()) {
+      sel.append(el('option', { attrs: { value: t }, text: t }));
+    }
+    sel.value = [...sel.options].some((o) => o.value === cur) ? cur : '';
+  }
+
+  async renderHistory({ refetch = true } = {}) {
     const body = $('#jev-history');
     if (!body) return;
-    let list;
-    try { list = (await this.client.approvals()).approvals || []; } catch (e) {
-      clear(body).append(el('tr', {}, el('td', { attrs: { colspan: 4 }, class: 'hint', text: `Could not read the audit log: ${e.message || e}` })));
-      return;
+    if (refetch || !this.history) {
+      try { this.history = (await this.client.approvals(null, 5000)).approvals || []; } catch (e) {
+        clear(body).append(el('tr', {}, el('td', { attrs: { colspan: 4 }, class: 'hint', text: `Could not read the audit log: ${e.message || e}` })));
+        return;
+      }
+      this.fillToolFilter();
     }
+    const rows = this.filtered();
+    const count = $('#audit-count');
+    if (count) count.textContent = `${rows.length} of ${this.history.length} decision${this.history.length === 1 ? '' : 's'}${rows.length > HISTORY_ROWS ? `; the newest ${HISTORY_ROWS} are shown, the CSV has all` : ''}`;
+    if ($('#audit-csv')) $('#audit-csv').disabled = !rows.length;
     clear(body);
-    if (!list.length) { body.append(el('tr', {}, el('td', { attrs: { colspan: 4 }, class: 'hint', text: 'No decisions yet.' }))); return; }
-    for (const a of [...list].sort((x, y) => (y.created || 0) - (x.created || 0)).slice(0, 200)) {
+    if (!rows.length) { body.append(el('tr', {}, el('td', { attrs: { colspan: 4 }, class: 'hint', text: this.history.length ? 'No decisions match these filters.' : 'No decisions yet.' }))); return; }
+    for (const a of rows.slice(0, HISTORY_ROWS)) {
       const st = String(a.status || 'pending').toLowerCase();
       const [ic, word] = STATUS_WORD[st] || ['dot', st];
       const when = a.created ? new Date(a.created * (a.created < 1e12 ? 1000 : 1)).toLocaleString() : '';
       const d = describe(a.tool, a.args);
-      body.append(el('tr', {},
+      const by = a.decided_by && !['policy', 'user'].includes(a.decided_by) ? ` · ${a.decided_by}` : '';
+      body.append(el('tr', { attrs: { 'data-status': st, 'data-day': dayOf(a.created) } },
         el('td', { text: when }),
         el('td', {}, el('code', { text: String(a.tool || '') })),
         el('td', { class: 'appr-exact-cell', text: d.exact || '' }),
-        el('td', {}, el('span', { class: 'appr-status', attrs: { 'data-status': st } }, icon(ic), el('span', { text: `${word}${a.remember === 'session' ? ' (session)' : ''}` })))));
+        el('td', {}, el('span', { class: 'appr-status', attrs: { 'data-status': st } }, icon(ic), el('span', { text: `${word}${a.remember === 'session' ? ' (session)' : ''}${by}` })))));
     }
+  }
+
+  exportCsv() {
+    const rows = this.filtered();
+    if (!rows.length) return;
+    download(`jev-audit-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(rows), 'text/csv;charset=utf-8');
+    this.app.notify('good', 'Audit log exported', `${rows.length} decision${rows.length === 1 ? '' : 's'} as CSV.`);
   }
 }

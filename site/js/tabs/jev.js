@@ -5,6 +5,9 @@
 //   approvals.js  the approval dialog, "N waiting" badge, pending list and audit history
 //   gallery.js    per-conversation files (images + lightbox, video, audio, code, downloads)
 //   doctor.js     status strip and the Doctor view (fixes, per-OS commands)
+//   models.js     the Models panel: installed models, default, delete, download, GGUF import
+//   settings.js   the Settings panel: settings, sandbox facts, data paths, export/delete all, rules
+//   audit.js      audit-log filters and CSV for the Approvals panel's history
 import { $, $$, el, clear, download } from '../ui/dom.js';
 import { getPref, setPref } from '../ui/prefs.js';
 import { collectDropped } from '../ui/dropzone.js';
@@ -15,8 +18,11 @@ import { Gallery } from '../jev/gallery.js';
 import { renderStrip, renderDoctor, bindDoctorOs } from '../jev/doctor.js';
 import { renderAnswer } from '../jev/highlight.js';
 import { icon } from '../jev/icons.js';
+import { ModelsPanel } from '../jev/models.js';
+import { SettingsPanel } from '../jev/settings.js';
 
-let app, client, approvals, gallery;
+let app, client, approvals, gallery, modelsPanel, settingsPanel;
+let modelList = [];
 let status = null, statusErr = null, shellStatus = null;
 let convId = null, turn = null, follower = null, model = '';
 let attachments = [];       // [{name, path, bytes, state: 'uploading'|'ready'|'error', error}]
@@ -45,6 +51,14 @@ export function init(a) {
   });
   approvals.onChange(renderWaiting);
   gallery = new Gallery($('#jev-gallery'), client, { count: $('#jev-gallery-count') });
+  modelsPanel = new ModelsPanel(app, client, approvals, {
+    onDefault: (name) => { model = name; setPref('jev-model', name); refreshStatus({ quiet: true }); },
+    onChanged: () => refreshStatus({ quiet: true }),
+  });
+  settingsPanel = new SettingsPanel(app, client, approvals, {
+    onSaved: () => refreshStatus({ quiet: true }),
+    onDataDeleted: () => { newConversation(); loadConversations(); approvals.renderHistory(); refreshStatus({ quiet: true }); },
+  });
   app.jev = { client, approvals, available: () => !!status };
   renderWaiting(0);
   buildStarters();
@@ -83,6 +97,7 @@ async function refreshStatus({ quiet = false } = {}) {
     try { shellStatus = await __TAURI__.core.invoke('backend_status'); } catch { shellStatus = null; }
   }
   if (status) await refreshModels();
+  else modelsPanel.update({ error: 'JEV’s backend is not available (see Doctor)' }, null);
   renderStrip(status, statusErr, model);
   if (!$('#jev-doctor').hidden || !quiet) renderDoctor(status, statusErr, shellStatus);
   const ready = !!(status && status.ollama && status.ollama.reachable && model);
@@ -97,8 +112,17 @@ async function refreshStatus({ quiet = false } = {}) {
 }
 
 async function refreshModels() {
-  let list = [];
-  try { list = (await client.models()).models || []; } catch { list = (status.models || []).map((m) => (typeof m === 'string' ? { name: m } : m)); }
+  let list = [], imported = [], error = null;
+  try {
+    const r = await client.models();
+    list = r.models || [];
+    imported = r.imported || [];
+  } catch (e) {
+    error = String(e.message || e);
+    list = (status.models || []).map((m) => (typeof m === 'string' ? { name: m } : m));
+  }
+  modelList = list;
+  modelsPanel.update({ models: list, imported, error }, status);
   const sel = $('#jev-model');
   const prev = getPref('jev-model');
   clear(sel);
@@ -123,10 +147,10 @@ function renderWaiting(n) {
   $('#tab-jev').setAttribute('aria-label', n ? `JEV, ${n} approval${n === 1 ? '' : 's'} waiting` : 'JEV');
 }
 
-function togglePanel(btn, panel, onOpen) {
-  const open = panel.hidden;
+function togglePanel(btn, panel, onOpen, { forceOpen = false } = {}) {
+  const open = forceOpen || panel.hidden;
   panel.hidden = !open;
-  btn.setAttribute('aria-expanded', String(open));
+  for (const b of $$(`[aria-controls="${panel.id}"]`)) b.setAttribute('aria-expanded', String(open));
   if (open) { if (onOpen) onOpen(); panel.focus({ preventScroll: false }); }
 }
 
@@ -142,75 +166,23 @@ function bindPanels() {
   $('#history-refresh').addEventListener('click', () => approvals.renderHistory());
   for (const b of $$('[data-close-panel]')) b.addEventListener('click', () => {
     const p = document.getElementById(b.dataset.closePanel);
-    const opener = document.querySelector(`[aria-controls="${p.id}"]`);
+    const openers = $$(`[aria-controls="${p.id}"]`);
     p.hidden = true;
-    if (opener) { opener.setAttribute('aria-expanded', 'false'); opener.focus(); }
+    for (const o of openers) o.setAttribute('aria-expanded', 'false');
+    if (openers[0]) openers[0].focus();
   });
   $('#jev-model').addEventListener('change', (e) => { model = e.target.value; setPref('jev-model', model); renderStrip(status, statusErr, model); refreshStatus({ quiet: true }); });
-  $('#jev-pull-btn').addEventListener('click', () => {
-    const f = $('#jev-pull-form');
-    f.hidden = !f.hidden;
-    $('#jev-pull-btn').setAttribute('aria-expanded', String(!f.hidden));
-    if (!f.hidden) $('#jev-pull-name').focus();
-  });
-  $('#jev-pull-go').addEventListener('click', pullModel);
-  $('#jev-pull-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); pullModel(); } });
+  const openModels = (btn) => togglePanel(btn, $('#jev-models'), () => refreshStatus({ quiet: true }));
+  $('#jev-models-btn').addEventListener('click', () => openModels($('#jev-models-btn')));
+  // the composer's "Manage models" always opens (and scrolls to) the panel
+  $('#jev-pull-btn').addEventListener('click', () => togglePanel($('#jev-pull-btn'), $('#jev-models'), () => refreshStatus({ quiet: true }), { forceOpen: true }));
+  $('#jev-settings-btn').addEventListener('click', () => togglePanel($('#jev-settings-btn'), $('#jev-settings'), () => settingsPanel.load(status, modelList)));
 }
 
-async function pullModel() {
-  const name = $('#jev-pull-name').value.trim();
-  const st = $('#jev-pull-status');
-  if (!/^[\w.\-/:]{1,120}$/.test(name)) { st.textContent = 'Type a model name such as qwen2.5:7b.'; return; }
-  st.textContent = `Asking to download ${name}…`;
-  try {
-    const r = await client.pullModel(name);
-    if (r.approval_id) approvals.add({ approval_id: r.approval_id, name: 'pull_model', args: { name }, reason: 'Downloading a model uses the internet and several GB of disk space, so JEV always asks first.', risk: 'approve' });
-    st.textContent = `Waiting for your approval to download ${name}.`;
-  } catch (e) {
-    st.textContent = `Could not request the download: ${e.message || e}`;
-  }
-}
-
-/** After an approval: a model download continues as a job (job_id) or shows up in the list. */
-function decided(a, decision, r) {
-  const st = $('#jev-pull-status');
-  if (!/pull|download_model/.test(a.tool)) {
-    if (/delete/.test(a.tool) && decision === 'approve') setTimeout(loadConversations, 800);
-    return;
-  }
-  const name = (a.args && (a.args.name || a.args.model)) || 'the model';
-  if (decision !== 'approve') { st.textContent = `Download of ${name} denied.`; return; }
-  if (r && r.job_id) {
-    st.textContent = `Downloading ${name}…`;
-    const bar = $('#jev-pull-bar');
-    bar.hidden = false;
-    follow((since) => client.jobEvents(r.job_id, since), (ev) => {
-      if (ev.event === 'progress' && (ev.fraction === null || ev.fraction === undefined)) {
-        if (ev.message) st.textContent = `Downloading ${name}: ${ev.message}`;
-      } else if (ev.event === 'progress') {
-        const pct = Math.round((Number(ev.fraction) || 0) * 100);
-        bar.firstChild.style.width = `${pct}%`;
-        bar.setAttribute('aria-valuenow', String(pct));
-        st.textContent = `Downloading ${name}: ${pct}%${ev.message ? `, ${ev.message}` : ''}`;
-      } else if (ev.event === 'done' || ev.event === 'tool_result') {
-        st.textContent = `${name} is ready.`;
-        bar.hidden = true;
-        refreshStatus({ quiet: true });
-      } else if (ev.event === 'error') {
-        st.textContent = `Download failed: ${ev.message}`;
-        bar.hidden = true;
-      }
-    }, { fast: 1000 });
-  } else {
-    st.textContent = `Downloading ${name}; it appears in the model menu when it finishes.`;
-    let tries = 0;
-    const t = setInterval(async () => {
-      tries += 1;
-      await refreshStatus({ quiet: true });
-      const names = [...$('#jev-model').options].map((o) => o.value);
-      if (names.includes(name) || tries > 200) { clearInterval(t); if (names.includes(name)) st.textContent = `${name} is ready.`; }
-    }, 3000);
-  }
+/** After any approval answered in the dialog. Model actions and Delete all follow their own result
+ *  (models.js, settings.js); here only the conversation list needs a refresh after a delete. */
+function decided(a, decision) {
+  if (/conversation/.test(a.tool) && /delete/.test(a.tool) && decision === 'approve') setTimeout(loadConversations, 800);
 }
 
 // ------------------------------------------------------------------ conversations

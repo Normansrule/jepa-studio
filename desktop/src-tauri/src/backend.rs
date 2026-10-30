@@ -63,9 +63,39 @@ pub fn append_allowed(file: &Path, picked: &Path) -> Result<PathBuf, String> {
     if !canon.is_dir() {
         return Err(format!("{} is not a folder", canon.display()));
     }
-    let s = canon.to_str().ok_or("the folder path is not valid Unicode")?;
+    append_line(file, canon)
+}
+
+/// Grant exactly one user-picked GGUF model file (not its folder): canonicalized like a folder,
+/// must be an existing regular file named `*.gguf` that starts with the GGUF magic bytes. The
+/// backend treats a file line as allowing that one path (`p == a`), so nothing next to it becomes
+/// readable. Used by `pick_gguf_file` so JEV can import the model after you approve it.
+pub fn append_allowed_gguf(file: &Path, picked: &Path) -> Result<PathBuf, String> {
+    use std::io::Read;
+    let canon = dunce::canonicalize(picked).map_err(|e| format!("cannot open {}: {e}", picked.display()))?;
+    if !canon.is_file() {
+        return Err(format!("{} is not a file", canon.display()));
+    }
+    let is_gguf = canon.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("gguf")).unwrap_or(false);
+    if !is_gguf {
+        return Err(format!("{} is not a .gguf file", canon.display()));
+    }
+    let mut magic = [0u8; 4];
+    fs::File::open(&canon)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .map_err(|e| format!("cannot read {}: {e}", canon.display()))?;
+    if &magic != b"GGUF" {
+        return Err(format!("{} does not start with the GGUF magic bytes; is it really a GGUF model?", canon.display()));
+    }
+    append_line(file, canon)
+}
+
+/// Shared tail of the two grants: refuse anything that would not round-trip as one line, then
+/// append it once.
+fn append_line(file: &Path, canon: PathBuf) -> Result<PathBuf, String> {
+    let s = canon.to_str().ok_or("the path is not valid Unicode")?;
     if s.contains(['\n', '\r', '\0']) || s.trim() != s {
-        return Err("the folder name contains line breaks or leading/trailing spaces; rename it and try again".into());
+        return Err("the name contains line breaks or leading/trailing spaces; rename it and try again".into());
     }
     let existing = fs::read_to_string(file).unwrap_or_default();
     let already = existing.lines().any(|l| {
@@ -332,6 +362,34 @@ mod tests {
         let p = append_allowed(&file, &other).unwrap();
         let s = fs::read_to_string(&file).unwrap();
         assert_eq!(s, format!("/some/manual/entry\n{}\n", p.to_str().unwrap()));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn gguf_grant_is_one_checked_file() {
+        let d = tmpdir("gguf");
+        let file = d.join("allowed-folders.txt");
+        ensure_allowed_file(&file).unwrap();
+        let m = d.join("Model.Q4_K_M.GGUF");
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&[0u8; 64]);
+        fs::write(&m, &bytes).unwrap();
+        let p = append_allowed_gguf(&file, &m).unwrap();
+        assert_eq!(p, dunce::canonicalize(&m).unwrap());
+        append_allowed_gguf(&file, &d.join(".").join("Model.Q4_K_M.GGUF")).unwrap();
+        let lines: Vec<String> = fs::read_to_string(&file).unwrap().lines().map(String::from).collect();
+        assert_eq!(lines, vec![p.to_str().unwrap().to_string()]);
+        // wrong extension, wrong magic, a folder, a missing file: refused and nothing written
+        fs::write(d.join("x.bin"), &bytes).unwrap();
+        assert!(append_allowed_gguf(&file, &d.join("x.bin")).is_err());
+        fs::write(d.join("fake.gguf"), b"PK\x03\x04 not a model").unwrap();
+        assert!(append_allowed_gguf(&file, &d.join("fake.gguf")).unwrap_err().contains("magic"));
+        fs::write(d.join("tiny.gguf"), b"GG").unwrap();
+        assert!(append_allowed_gguf(&file, &d.join("tiny.gguf")).is_err());
+        fs::create_dir_all(d.join("dir.gguf")).unwrap();
+        assert!(append_allowed_gguf(&file, &d.join("dir.gguf")).is_err());
+        assert!(append_allowed_gguf(&file, &d.join("missing.gguf")).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap().lines().count(), 1);
         let _ = fs::remove_dir_all(&d);
     }
 }

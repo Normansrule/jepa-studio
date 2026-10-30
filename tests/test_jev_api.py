@@ -360,4 +360,4 @@ def test_paths_audit_limit_export_and_delete_all(srv):
     _, log = req(srv, "/api/jev/approvals")
     assert [a["id"] for a in log["approvals"]] == [out["approval_id"]] and log["approvals"][0]["status"] == "approved"
     assert req(srv, "/api/jev/models")[1]["imported"] == []
-    assert Path(g["paths"]["settings"]).exists() or True        # settings.json (if written) is kept
+    assert Path(g["paths"]["settings"]).exists()        # settings.json (written by an earlier test) is kept

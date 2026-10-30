@@ -1,10 +1,6 @@
 // JEV API client: a thin wrapper over the desktop backend's /api/jev/* routes (docs/jev/api.md).
 // It reuses DesktopBackend.req / .blob, so every call carries the session token, goes only to
 // 127.0.0.1:<port>, and the web tier (no DesktopBackend) never constructs one.
-//
-// One route is proposed by the UI and not yet in the contract (docs/jev/ui.md, "Proposed routes"):
-//   POST /api/jev/conversations                 {title?, model?}          -> {id}
-//   POST /api/jev/conversations/<id>/files      {name, mime, data_base64} -> {path, name, bytes}
 
 const enc = encodeURIComponent;
 export const MAX_UPLOAD_BYTES = 1.5 * 1024 * 1024;   // base64 of this stays under the 2 MB JSON cap
@@ -18,7 +14,12 @@ export class JevClient {
   status() { return this.b.req('GET', '/api/jev/status'); }
   models() { return this.b.req('GET', '/api/jev/models'); }
   pullModel(name) { return this.b.req('POST', '/api/jev/models/pull', { name: String(name).slice(0, 200) }); }
+  importModel(ggufPath, name) { return this.b.req('POST', '/api/jev/models/import', { gguf_path: String(ggufPath), name: String(name).slice(0, 200) }); }
+  deleteModel(name) { return this.b.req('DELETE', `/api/jev/models/${enc(name)}`); }
+  getSettings() { return this.b.req('GET', '/api/jev/settings'); }
   settings(patch) { return this.b.req('POST', '/api/jev/settings', patch); }
+  exportAll() { return this.b.blob('/api/jev/export'); }
+  deleteAllData(keepAuditLog = false) { return this.b.req('POST', '/api/jev/data/delete', { keep_audit_log: !!keepAuditLog }); }
 
   chat({ message, conversationId = null, model = null, attachments = [] }) {
     const body = { message: String(message).slice(0, 20000) };
@@ -44,7 +45,10 @@ export class JevClient {
     });
   }
 
-  approvals(status = null) { return this.b.req('GET', `/api/jev/approvals${status ? `?status=${enc(status)}` : ''}`); }
+  approvals(status = null, limit = null) {
+    const q = [status ? `status=${enc(status)}` : '', limit ? `limit=${Number(limit) || 500}` : ''].filter(Boolean).join('&');
+    return this.b.req('GET', `/api/jev/approvals${q ? `?${q}` : ''}`);
+  }
   decide(id, decision, remember = null) {
     return this.b.req('POST', `/api/jev/approvals/${enc(id)}`, { decision, remember: remember || null });
   }
