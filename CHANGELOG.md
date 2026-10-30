@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0 (2026-10-30): JEV Studio
+
+The project is now **JEV Studio** (repository `jev-jepa-studio`): JEPA Studio plus **JEV**, a
+local AI agent. Python package and command names are unchanged (`jepa-studio`), plus a new `jev`
+package and command.
+
+**New: JEV, the local agent** (`jev/`, docs in `docs/jev/`)
+- Chat and tool use with your own models through a local Ollama (loopback only unless you
+  allow a remote URL). Download models, import GGUF files you already have (SHA-256 recorded),
+  delete them; weights stay in folders you control.
+- **Sandbox auto-run with an approval safety net.** Code and renders run freely inside each
+  conversation's workspace with CPU/memory/time/file limits; on Linux/WSL with bubblewrap the
+  sandbox also has no network and cannot see your home folder or Windows drives. Network, files
+  outside the workspace, deleting, installing packages or models, shell commands, long GPU jobs
+  and anything leaving the machine always ask first. The rules are one editable table
+  (`jev/policy.py`); every decision is written to an audit log.
+- Local SQLite store (conversations, tool calls, approvals, artifacts) with export and delete.
+- Tools: files, calculator, plots, Python/Node in the sandbox, shell (asks), packages (asks),
+  JEPA embeddings and training, science renders and simulations, media.
+- `jev doctor`, `jev chat`, `jev models list|pull|import|rm`.
+
+**New: science**
+- Interstellar-style black-hole renderer (`jev/science/`): null geodesics in Kerr spacetime with
+  conserved-quantity projection, thin Page–Thorne disk, blackbody colours, gravitational and
+  Doppler shifts with beaming, an "Interstellar mode" as in James et al. (2015), lensed stars,
+  stills and orbit videos. Validated against the analytic shadow, photon sphere, ISCO, Kerr
+  critical curve and weak-field deflection (`docs/jev/science.md`).
+- Physics simulations: N-body (figure-eight), double pendulum, 2-D wave, Kepler/relativistic
+  orbit, Lorenz, with conservation checks.
+- Real-time WebGL2 black hole and canvas simulations in the browser (Science tab, both tiers).
+
+**New: media**
+- Narrated explainer videos (local voice via Piper/espeak-ng/say/SAPI, slides, burned-in
+  captions), footage editing (shot detection, JEPA-embedding scene search, highlight reels,
+  cuts), images and charts, optional local diffusion text-to-image/video behind approval.
+
+**New: UI**
+- JEV tab (desktop): streaming chat, tool cards with risk badges, approval dialog and audit
+  view, artifact gallery, model manager, settings, status and Doctor. Science tab (web +
+  desktop). Product renamed in the site and the desktop app (new app id: existing users start
+  with a fresh data folder; see `docs/desktop.md`).
+
+**Changed**
+- The docs assistant indexes `docs/jev/` too. Setup script: new repo name, keeps an existing
+  `~/jepa-studio` clone, and offers to install Ollama (asks in a terminal even with `--yes`) and a
+  model sized for your GPU.
+
 ## 0.3.1 (2026-10-05)
 
 **Fixed**

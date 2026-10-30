@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use jepa-studio, please cite it as below, and cite LeJEPA (and LeWorldModel if you use the world model)."
-title: "jepa-studio: pretrain, inspect and use LeJEPA models on your own unlabeled data"
+title: "JEV Studio (jev-jepa-studio): a local AI agent plus LeJEPA models on your own unlabeled data"
 abstract: >-
   An app and Python package to pretrain LeJEPA (JEPA + SIGReg) models on unlabeled images,
   video or time series, inspect and evaluate their embeddings, and plan with a CEM planner
@@ -9,10 +9,10 @@ type: software
 authors:
   - family-names: Norman
     given-names: Aleksander
-version: 0.3.1
+version: 0.4.0
 license: MIT
-repository-code: "https://github.com/Normansrule/jepa-studio"
-url: "https://normansrule.github.io/jepa-studio/"
+repository-code: "https://github.com/Normansrule/jev-jepa-studio"
+url: "https://normansrule.github.io/jev-jepa-studio/"
 keywords:
   - jepa
   - lejepa

@@ -137,3 +137,9 @@ Every page ships `default-src 'self'; script-src 'self'; style-src 'self'; ...`.
 `<script>`, no `on*=` attributes, no `style="..."` in HTML strings, no `eval`/`new Function`.
 Setting `element.style.x` from JavaScript is allowed. Untrusted text (file names, CSV headers,
 logs, doc passages) is always inserted with `textContent`.
+
+## JEV colours
+
+The JEV tab adds three risk tokens (`--risk-read`, `--risk-sandbox`, `--risk-approve`) and the
+code-highlighting tokens. Their values, contrast ratios and uses are listed in
+[jev/ui.md](jev/ui.md). The same rule applies: a risk colour always comes with an icon and a word.

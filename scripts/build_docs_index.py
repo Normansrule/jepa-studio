@@ -77,14 +77,14 @@ def split_passages(path: Path) -> list[dict]:
 
 
 def build() -> dict:
-    files = sorted((ROOT / "docs").glob("*.md"))
+    files = sorted((ROOT / "docs").rglob("*.md"))      # docs/ and docs/jev/
     readme = ROOT / "README.md"
     if readme.exists():
         files.insert(0, readme)
     passages = []
     for f in files:
         passages += split_passages(f)
-    return {"version": 1, "source": "docs/*.md", "files": [f.relative_to(ROOT).as_posix() for f in files],
+    return {"version": 1, "source": "docs/**/*.md", "files": [f.relative_to(ROOT).as_posix() for f in files],
             "passages": passages}
 
 
