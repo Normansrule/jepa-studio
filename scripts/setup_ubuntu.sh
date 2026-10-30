@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
-# jepa-studio: unpack, set up, test and publish from an Ubuntu terminal (WSL2 or plain Ubuntu).
+# JEV Studio (jev-jepa-studio): unpack, set up, test and publish from an Ubuntu terminal (WSL2 or plain Ubuntu).
 #
 #   bash setup_ubuntu.sh [ZIP] [--cpu] [--browser-tests] [--skip-tests] [--no-push]
 #                        [--ssh-host HOST] [--https] [--dest DIR] [--yes] [--doctor]
+#                        [--no-ai] [--model NAME]
 #
 # (Saved outside the repo it is usually called ~/setup_jepa_studio.sh; same script.)
 #
 # Steps, all safe to re-run:
 #   1  preflight: what machine this is, where the log goes
-#   2  find the zip: the path you give, else the newest jepa-studio*.zip (including Chrome's
-#      "jepa-studio-v0.2.0 (1).zip" re-downloads) in Windows Downloads, ~/Downloads, ~ and
+#   2  find the zip: the path you give, else the newest jev-jepa-studio*.zip or jepa-studio*.zip
+#      (including Chrome's "... (1).zip" re-downloads) in Windows Downloads, ~/Downloads, ~ and
 #      this script's folder
 #   3  system packages: ONE `sudo apt-get install` for whatever is missing among unzip git curl
 #      ca-certificates python3-venv python3-pip build-essential (+ the GitHub CLI `gh`)
-#   4  unpack to ~/jepa-studio (never into ~ itself). An existing git repo there is updated in
-#      place: history kept, files deleted in the new version removed
+#   4  unpack to ~/jev-jepa-studio (or your existing ~/jepa-studio clone; never into ~ itself).
+#      An existing git repo there is updated in place: history kept, files deleted in the new version removed
 #   5  Python: conda env "jepa-studio" (Python 3.12) if conda is installed, else ~/jepa-studio/.venv
 #      (newest system Python 3.10-3.14, or Python 3.12 via uv). PyTorch: CUDA wheels when
 #      `nvidia-smi -L` works, else the small CPU wheels. Then pip install -e ".[dev,video,onnx]"
 #   6  tests: pytest -m "not slow" (browser tests only with --browser-tests). If something fails
 #      you are asked "Publish anyway? [y/N]"
-#   7  GitHub sign-in (gh, account Normansrule, `workflow` permission when pushing over HTTPS)
-#   8  git identity (asked once, stored in this repo only) + commit
-#   9  push: SSH through the github-normansrule host alias when it signs in as Normansrule,
+#   7  local AI for JEV: offers to install Ollama (official installer; asks even with --yes) and
+#      to download a model sized for your GPU (--model NAME to choose, --no-ai to skip)
+#   8  GitHub sign-in (gh, account Normansrule, `workflow` permission when pushing over HTTPS)
+#   9  git identity (asked once, stored in this repo only) + commit
+#  10  push: SSH through the github-normansrule host alias when it signs in as Normansrule,
 #      else HTTPS through gh
-#  10  GitHub Pages (source: GitHub Actions) + Actions on, Pages workflow started
-#  11  optional: push tag vX.Y.Z so .github/workflows/desktop.yml builds the desktop installers
+#  11  GitHub Pages (source: GitHub Actions) + Actions on, Pages workflow started
+#  12  optional: push tag vX.Y.Z so .github/workflows/desktop.yml builds the desktop installers
 #
 # Options:
 #   ZIP               path to the zip (a Windows path like C:\Users\me\Downloads\x.zip works too)
@@ -35,9 +38,11 @@
 #   --no-push         stop after the tests (no git commit, nothing sent to GitHub)
 #   --ssh-host HOST   push over SSH through this ~/.ssh/config host alias
 #   --https           push over HTTPS through the GitHub CLI, even if SSH would work
-#   --dest DIR        where the repo lives (default ~/jepa-studio)
+#   --dest DIR        where the repo lives (default ~/jev-jepa-studio, or an existing ~/jepa-studio clone)
 #   --yes, -y         answer yes to "Publish anyway?" and "Build desktop installers now?"
 #   --doctor          print a read-only report of this machine and exit; changes nothing
+#   --no-ai           skip the local AI step (Ollama install / model download for JEV)
+#   --model NAME      Ollama model to download for JEV (default: picked from your GPU memory)
 #   -h, --help        this text
 #
 # Everything is also written to ~/jepa-studio-setup-YYYYmmdd-HHMMSS.log. If a step fails, the
@@ -59,15 +64,15 @@ fi
 set -Eeuo pipefail
 
 OWNER=Normansrule
-REPO=jepa-studio
+REPO=jev-jepa-studio
 DEFAULT_SSH_HOST=github-normansrule
 ENV_NAME=jepa-studio
 PAGES_URL="https://normansrule.github.io/$REPO/"
-DESCRIPTION="Pretrain, inspect and use LeJEPA models on your own unlabeled data, with a planning bot in a learned world model. Web demo + desktop app."
+DESCRIPTION="JEV Studio: a local AI agent (Ollama) that answers, codes, makes images and videos and renders physics like an Interstellar black hole, plus LeJEPA models. Web + desktop app."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # options
-ZIP="" CPU=0 BROWSER=0 SKIP_TESTS=0 PUSH=1 SSH_HOST_OPT="" FORCE_HTTPS=0 DEST="" YES=0 DOCTOR=0
+ZIP="" CPU=0 BROWSER=0 SKIP_TESTS=0 PUSH=1 SSH_HOST_OPT="" FORCE_HTTPS=0 DEST="" YES=0 DOCTOR=0 NO_AI=0 AI_MODEL=""
 DRY_PIP="${JEPA_SETUP_DRY_PIP:-0}"
 # state
 LOG="" TEE_PID="" WORK="" STEP_NO=0 STEP_TOTAL=6 STEP_NAME="start"
@@ -139,6 +144,13 @@ ask_yn() {
   read -r -p "    $q [y/N] " a || a=""
   case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
+# like ask_yn, but --yes does NOT answer it: for things that run code from the internet as root
+ask_yn_strict() {
+  local q=$1 a=""
+  if [ ! -t 0 ]; then info "$q [y/N] n  (asks in a terminal only, even with --yes)"; return 1; fi
+  read -r -p "    $q [y/N] " a || a=""
+  case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
 # free-text question with a default (the default is used when there is no terminal)
 ask_text() {
   local q=$1 def=$2 a=""
@@ -195,7 +207,7 @@ search_dirs() {
 list_zips() {
   local d
   while IFS= read -r d; do
-    find "$d" -maxdepth 1 -type f -iname 'jepa-studio*.zip' -printf '%T@\t%p\n' 2>/dev/null || true
+    find "$d" -maxdepth 1 -type f \( -iname 'jev-jepa-studio*.zip' -o -iname 'jepa-studio*.zip' \) -printf '%T@\t%p\n' 2>/dev/null || true
   done < <(search_dirs | awk '!seen[$0]++') | sort -t "$(printf '\t')" -k1,1 -rn
 }
 
@@ -637,7 +649,7 @@ step_identity_commit() {
   if git diff --cached --quiet; then
     info "nothing new to commit"
   else
-    git commit -q -m "jepa-studio $(project_version): LeJEPA studio (web + desktop)"
+    git commit -q -m "JEV Studio $(project_version): local AI agent + JEPA models (web + desktop)"
     ok "committed $(git rev-parse --short HEAD)"
   fi
   git rev-parse -q --verify HEAD >/dev/null || die "the repo has no commit to push"
@@ -711,6 +723,47 @@ step_tag() {
   fi
 }
 
+# ------------------------------------------------------------------- local AI (Ollama) for JEV
+ollama_up() { curl -fsS -m 3 http://127.0.0.1:11434/api/version >/dev/null 2>&1; }
+gpu_vram_mb() { nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | sort -rn | head -n1 || true; }
+pick_model() {
+  # A model that fits: 7-8B coder/general models need ~6 GB of VRAM at 4-bit; small GPUs/CPU get 3B.
+  local vram; vram=$(gpu_vram_mb)
+  if [ -n "$AI_MODEL" ]; then printf '%s' "$AI_MODEL"
+  elif [ -n "$vram" ] && [ "$vram" -ge 7500 ]; then printf 'qwen2.5-coder:7b'
+  else printf 'qwen2.5-coder:3b'; fi
+}
+step_local_ai() {
+  step "Local AI for JEV (Ollama)"
+  if [ "$NO_AI" = 1 ]; then info "skipped (--no-ai)"; return 0; fi
+  if ! have ollama && ! ollama_up; then
+    info "Ollama is not installed. JEV needs it for chat and coding (the JEPA, science and media tools work without it)."
+    info "Official installer (downloads and runs https://ollama.com/install.sh with sudo):"
+    info "  curl -fsSL https://ollama.com/install.sh | sh"
+    if is_wsl; then info "On WSL2 this uses your NVIDIA GPU through the Windows driver; nothing to install on Windows."; fi
+    if ask_yn_strict "Install Ollama now?"; then
+      if [ "$DRY_PIP" = 1 ]; then info "[dry-pip] would run the Ollama installer"
+      else curl -fsSL https://ollama.com/install.sh | sh || { warn "Ollama install failed; see https://ollama.com/download"; return 0; }; fi
+    else
+      info "skipped. Later: run the command above, then: ollama pull $(pick_model)"; return 0
+    fi
+  fi
+  if ! ollama_up && have ollama; then
+    info "starting the Ollama server in the background (ollama serve)"
+    if [ "$DRY_PIP" != 1 ]; then (nohup ollama serve >/dev/null 2>&1 &) ; sleep 3; fi
+  fi
+  if [ "$DRY_PIP" != 1 ] && ! ollama_up; then warn "Ollama isn't answering on 127.0.0.1:11434; start it with: ollama serve"; return 0; fi
+  ok "Ollama is running"
+  local model; model=$(pick_model)
+  if [ "$DRY_PIP" != 1 ] && ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$model"; then ok "model $model already downloaded"; return 0; fi
+  info "suggested model for this machine: $model (GPU VRAM: $(gpu_vram_mb || true) MB; models are stored under ~/.ollama/models or \$OLLAMA_MODELS)"
+  if ask_yn "Download $model now (a few GB)?"; then
+    if [ "$DRY_PIP" = 1 ]; then info "[dry-pip] ollama pull $model"; else ollama pull "$model" || warn "ollama pull failed; retry later: ollama pull $model"; fi
+  else
+    info "skipped. Later: ollama pull $model   (or any model; JEV lists what you have)"
+  fi
+}
+
 summary() {
   printf '\n%sAll set.%s\n' "$GR" "$N0"
   if [ "$PUSH" = 1 ]; then
@@ -726,6 +779,8 @@ EOF
   fi
   cat <<EOF
   Locally:   cd $DEST && $ACTIVATE
+             jev doctor                                       # is the local AI ready?
+             jev chat "render a spinning black hole"         # JEV in the terminal
              jepa-studio doctor
              jepa-studio train --epochs 2 --eval            # a short real PyTorch run
              python -m http.server -d site 8000              # web app at http://localhost:8000/app.html
@@ -746,6 +801,9 @@ main() {
       --https) FORCE_HTTPS=1 ;;
       --yes | -y) YES=1 ;;
       --doctor) DOCTOR=1 ;;
+      --no-ai) NO_AI=1 ;;
+      --model) [ $# -ge 2 ] || usage_die "--model needs an Ollama model name"; AI_MODEL=$2; shift ;;
+      --model=*) AI_MODEL=${a#*=} ;;
       --ssh-host) [ $# -ge 2 ] || usage_die "--ssh-host needs a host alias"; SSH_HOST_OPT=$2; shift ;;
       --ssh-host=*) SSH_HOST_OPT=${a#*=} ;;
       --dest) [ $# -ge 2 ] || usage_die "--dest needs a folder"; DEST=$2; shift ;;
@@ -759,11 +817,13 @@ main() {
   [ -n "$SSH_HOST_OPT" ] && [ "$FORCE_HTTPS" = 1 ] && usage_die "--https and --ssh-host contradict each other"
   [ -n "${HOME:-}" ] && [ -d "$HOME" ] || { echo "HOME is not set to a folder" >&2; exit 1; }
 
+  # an existing clone from before the rename (~/jepa-studio) keeps being used
+  if [ -z "$DEST" ] && [ -d "$HOME/jepa-studio/.git" ] && [ ! -e "$HOME/$REPO" ]; then DEST="$HOME/jepa-studio"; fi
   DEST=$(realpath -m -- "${DEST:-$HOME/$REPO}")
   local home_r; home_r=$(realpath -m -- "$HOME")
   if [ "$DEST" = "$home_r" ] || [ "$DEST" = / ] || [[ $home_r == "$DEST"/* ]]; then
     echo "Refusing to use $DEST as the repo folder: it is your home folder (or contains it)." >&2
-    echo "Use the default (~/jepa-studio) or --dest ~/some/new/folder." >&2
+    echo "Use the default (~/$REPO) or --dest ~/some/new/folder." >&2
     exit 1
   fi
 
@@ -773,15 +833,17 @@ main() {
 
   if [ "$DOCTOR" = 1 ]; then doctor; exit 0; fi
 
-  [ "$PUSH" = 0 ] || STEP_TOTAL=11
+  STEP_TOTAL=7
+  [ "$PUSH" = 0 ] || STEP_TOTAL=12
   start_log
-  printf '%sjepa-studio setup%s  %s\n' "$B" "$N0" "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf '%sJEV Studio setup%s  %s\n' "$B" "$N0" "$(date '+%Y-%m-%d %H:%M:%S')"
   step_preflight
   step_find_zip
   step_packages
   step_unpack
   step_python
   step_tests
+  step_local_ai
   if [ "$PUSH" = 0 ]; then
     info "--no-push: stopping before git/GitHub"
     summary; return 0

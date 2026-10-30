@@ -38,7 +38,7 @@ pkg="${!#}"
 for m in ${STUB_MISSING_PKGS:-}; do [ "$m" = "$pkg" ] && { printf 'unknown ok not-installed'; exit 1; }; done
 printf 'install ok installed'""",
     "nvidia-smi": 'log nvidia-smi "$@"; exit 9',
-    "curl": 'log curl "$@"; printf 200',
+    "curl": 'log curl "$@"; case "$*" in *11434*) [ "${STUB_OLLAMA_DOWN:-0}" = 1 ] && exit 7;; esac; printf 200',
     "python3": r"""log python3 "$@"
 case "$*" in
   *"-m pytest"*)
@@ -97,11 +97,11 @@ class Sandbox:
             p.chmod(0o755)
         (self.home / ".gitconfig").write_text(
             f'[url "{self.remote}"]\n'
-            "\tinsteadOf = git@github-normansrule:Normansrule/jepa-studio.git\n"
-            "\tinsteadOf = https://github.com/Normansrule/jepa-studio.git\n"
+            "\tinsteadOf = git@github-normansrule:Normansrule/jev-jepa-studio.git\n"
+            "\tinsteadOf = https://github.com/Normansrule/jev-jepa-studio.git\n"
             "[init]\n\tdefaultBranch = main\n"
         )
-        self.dest = self.home / "jepa-studio"
+        self.dest = self.home / "jev-jepa-studio"
         self.downloads = self.home / "Downloads"
         self.downloads.mkdir()
 
@@ -205,7 +205,7 @@ def test_zip_discovery_picks_newest_chrome_duplicate(sb: Sandbox):
     assert (sb.dest / "marker.txt").read_text() == "new"
     assert not (sb.dest / ".git").exists()              # --no-push: no git at all
     logs = list(sb.home.glob("jepa-studio-setup-*.log"))
-    assert len(logs) == 1 and "[4/6] Unpack" in logs[0].read_text()
+    assert len(logs) == 1 and "[4/7] Unpack" in logs[0].read_text()
     assert "\x1b[" not in logs[0].read_text()
 
 
@@ -256,12 +256,12 @@ def test_https_path_adds_workflow_scope_and_sets_up_git(sb: Sandbox):
     calls = sb.calls()
     assert "gh auth refresh -h github.com -s workflow" in calls
     assert "gh auth setup-git -h github.com" in calls
-    assert "gh repo create Normansrule/jepa-studio --public" in calls
-    assert "gh api -X POST repos/Normansrule/jepa-studio/pages -f build_type=workflow" in calls
-    assert "gh workflow run pages.yml -R Normansrule/jepa-studio --ref main" in calls
+    assert "gh repo create Normansrule/jev-jepa-studio --public" in calls
+    assert "gh api -X POST repos/Normansrule/jev-jepa-studio/pages -f build_type=workflow" in calls
+    assert "gh workflow run pages.yml -R Normansrule/jev-jepa-studio --ref main" in calls
     cfg = lambda k: subprocess.run(["git", "-C", str(sb.dest), "config", "--local", k],  # noqa: E731
                                    capture_output=True, text=True).stdout.strip()
-    assert cfg("remote.origin.url") == "https://github.com/Normansrule/jepa-studio.git"
+    assert cfg("remote.origin.url") == "https://github.com/Normansrule/jev-jepa-studio.git"
     assert cfg("user.name") == "Aleksander Norman"
     assert cfg("user.email") == "aleks@example.com"
     assert "refs/heads/main" in sb.remote_refs()
@@ -285,7 +285,7 @@ def test_ssh_path_when_alias_signs_in_as_owner(sb: Sandbox):
     assert "ssh -T" in calls and "git@github-normansrule" in calls
     assert "setup-git" not in calls and "auth refresh" not in calls
     url = subprocess.run(["git", "-C", str(sb.dest), "config", "remote.origin.url"], capture_output=True, text=True)
-    assert url.stdout.strip() == "git@github-normansrule:Normansrule/jepa-studio.git"
+    assert url.stdout.strip() == "git@github-normansrule:Normansrule/jev-jepa-studio.git"
     refs = sb.remote_refs()
     assert "refs/heads/main" in refs and "refs/tags/v0.2.0" in refs     # --yes pushes the release tag
 
@@ -333,11 +333,11 @@ def test_unexpected_failure_names_step_and_log(sb: Sandbox):
     r = sb.run(str(z), "--skip-tests", STUB_GH_CREATE_RC="1")
     assert r.returncode != 0
     out = sb.out(r)
-    assert "FAILED at step 9 (Push to github.com/Normansrule/jepa-studio)" in out
+    assert "FAILED at step 10 (Push to github.com/Normansrule/jev-jepa-studio)" in out
     assert "command: gh repo create" in out
     assert "Paste the last 40 lines of the log to Claude" in out
     log = next(sb.home.glob("jepa-studio-setup-*.log"))
-    assert "FAILED at step 9" in log.read_text()
+    assert "FAILED at step 10" in log.read_text()
 
 
 def test_missing_packages_use_one_apt_install(sb: Sandbox):
@@ -354,3 +354,25 @@ def test_no_apt_when_everything_is_present(sb: Sandbox):
     r = sb.run(str(z), "--no-push", "--skip-tests")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "apt-get" not in sb.calls()
+
+
+def test_existing_pre_rename_clone_is_reused(sb: Sandbox):
+    """Users who set up before the rename have ~/jepa-studio as a git clone: it stays the repo folder."""
+    import subprocess
+    old = sb.home / "jepa-studio"
+    old.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(old)], check=True)
+    z = make_zip(sb.downloads / "jev-jepa-studio-v0.4.0.zip", top="jev-jepa-studio")
+    r = sb.run(str(z), "--no-push", "--skip-tests", "--no-ai")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"repo folder: {old}" in r.stdout
+    assert (old / "marker.txt").exists() and not (sb.home / "jev-jepa-studio").exists()
+
+
+def test_local_ai_step_never_installs_without_a_terminal(sb: Sandbox):
+    """Installing Ollama runs a script from the internet as root: --yes must not answer that question."""
+    z = make_zip(sb.downloads / "jev-jepa-studio.zip")
+    r = sb.run(str(z), "--no-push", "--skip-tests", "--yes", STUB_OLLAMA_DOWN="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Install Ollama now? [y/N] n  (asks in a terminal only, even with --yes)" in r.stdout
+    assert "install.sh" not in sb.calls()
