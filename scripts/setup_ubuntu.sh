@@ -18,7 +18,7 @@
 #      An existing git repo there is updated in place: history kept, files deleted in the new version removed
 #   5  Python: conda env "jepa-studio" (Python 3.12) if conda is installed, else ~/jepa-studio/.venv
 #      (newest system Python 3.10-3.14, or Python 3.12 via uv). PyTorch: CUDA wheels when
-#      `nvidia-smi -L` works, else the small CPU wheels. Then pip install -e ".[dev,video,onnx]"
+#      `nvidia-smi -L` works, else the small CPU wheels. Then pip install -e ".[dev,video,onnx,media]"
 #   6  tests: pytest -m "not slow" (browser tests only with --browser-tests). If something fails
 #      you are asked "Publish anyway? [y/N]"
 #   7  local AI for JEV: offers to install Ollama (official installer; asks even with --yes) and
@@ -510,7 +510,7 @@ step_python() {
   pip_install -q --upgrade pip
   if [ -n "$torch_index" ]; then pip_install torch torchvision --index-url "$torch_index"; else pip_install torch torchvision; fi
   info "installing jepa-studio (editable) with extras dev, video, onnx"
-  pip_install -e ".[dev,video,onnx]"
+  pip_install -e ".[dev,video,onnx,media]"
   if [ "$DRY_PIP" != 1 ]; then
     "$PY" -c 'import torch; d = "cuda" if torch.cuda.is_available() else "cpu"; print(f"    ok torch {torch.__version__}, device {d}")'
   fi
