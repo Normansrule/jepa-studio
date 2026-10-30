@@ -1,0 +1,15 @@
+# AppArmor profile that lets bubblewrap create user namespaces on Ubuntu 23.10+ / 24.04+,
+# where kernel.apparmor_restrict_unprivileged_userns=1 blocks them for unconfined programs.
+# JEV runs model-written code inside bubblewrap; without this, JEV falls back to a weak sandbox
+# and asks before every code run. This is the pattern Ubuntu documents for apps that need
+# user namespaces (it grants `userns` to /usr/bin/bwrap only; nothing else changes).
+# Install:  sudo install -m 644 scripts/apparmor/jev-bwrap /etc/apparmor.d/jev-bwrap
+#           sudo apparmor_parser -r /etc/apparmor.d/jev-bwrap
+abi <abi/4.0>,
+include <tunables/global>
+
+profile jev-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/jev-bwrap>
+}

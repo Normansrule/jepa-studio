@@ -20,6 +20,10 @@ package and command.
 - Tools: files, calculator, plots, Python/Node in the sandbox, shell (asks), packages (asks),
   JEPA embeddings and training, science renders and simulations, media.
 - `jev doctor`, `jev chat`, `jev models list|pull|import|rm`.
+- Ubuntu 24.04+: JEV detects the AppArmor user-namespace restriction (which would leave the
+  sandbox weak) and `jev doctor` prints the one-step fix, an AppArmor profile for bubblewrap
+  (`scripts/apparmor/jev-bwrap`); the setup script offers to install it. On Linux with a user
+  systemd, each run also gets its own scope with memory and task limits.
 
 **New: science**
 - Interstellar-style black-hole renderer (`jev/science/`): null geodesics in Kerr spacetime with

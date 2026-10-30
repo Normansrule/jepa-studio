@@ -565,6 +565,15 @@ def _bwrap_version() -> str:
     return _BWRAP_VERSION["v"]
 
 
+def userns_restricted_by_apparmor() -> bool:
+    """Ubuntu 23.10+ sets kernel.apparmor_restrict_unprivileged_userns=1: unconfined programs (bwrap,
+    unshare) can't create user namespaces unless an AppArmor profile grants `userns`."""
+    try:
+        return Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip() == "1"  # wsfs-ok: a fixed kernel sysctl, not a workspace path
+    except OSError:
+        return False
+
+
 def wsl_info(proc: str = "/proc", run: str = "/run") -> dict:
     """Is this WSL, and is Windows interop (running .exe files from Linux) switched on?"""
     def read(p):
@@ -819,6 +828,12 @@ class Sandbox:
             notes.append("WSL interop is on: Windows programs can be started from Linux. JEV hides /init, "
                          "/run/WSL, /mnt and blocks vsock inside bubblewrap, but turn interop off for a stronger "
                          "boundary ([interop] enabled=false in /etc/wsl.conf; see docs/jev/SAFETY.md)")
+        if base["method"] != "bwrap" and IS_LINUX and userns_restricted_by_apparmor():
+            notes.append("Ubuntu's AppArmor blocks user namespaces for unconfined programs "
+                         "(kernel.apparmor_restrict_unprivileged_userns=1), so bubblewrap cannot isolate runs. "
+                         "Fix: sudo apt-get install -y bubblewrap apparmor && sudo install -m 644 "
+                         "scripts/apparmor/jev-bwrap /etc/apparmor.d/jev-bwrap && sudo apparmor_parser -r "
+                         "/etc/apparmor.d/jev-bwrap (docs/jev/SAFETY.md, 'Ubuntu 24.04 and later')")
         if w.get("windows_path_in_PATH"):
             notes.append("Windows folders are on PATH (appendWindowsPath); set appendWindowsPath=false")
         base["isolation_notes"] = notes
@@ -885,12 +900,25 @@ class Sandbox:
         return self._finish_caps(base)
 
     @staticmethod
-    def _systemd_scope_ok() -> bool:
-        if not shutil.which("systemd-run"):
+    def _bus_env() -> dict:
+        """The only variables systemd-run needs to reach the user manager. Runs get them for the
+        systemd-run process alone; the sandboxed program itself starts from `env -i` (see run())."""
+        return {k: os.environ[k] for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if os.environ.get(k)}
+
+    def _systemd_scope_ok(self) -> bool:
+        """True only if a scope really starts the way runs will start it: same minimal environment,
+        child launched through `env -i`. WSL without systemd, CI runners and containers have
+        systemd-run but no user bus ("Failed to connect to bus"); those fall back to the subreaper."""
+        exe, env_exe = self._exe("systemd-run"), self._exe("env")
+        if not exe or not env_exe:
+            return False
+        bus = self._bus_env()
+        if "XDG_RUNTIME_DIR" not in bus:
             return False
         try:
-            return subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true"],
-                                  capture_output=True, timeout=10).returncode == 0
+            r = subprocess.run([exe, "--user", "--scope", "--quiet", "--collect", "--", env_exe, "-i", "true"],
+                               capture_output=True, timeout=10, env={"PATH": "/usr/bin:/bin", **bus})
+            return r.returncode == 0 and b"Failed to connect" not in r.stderr
         except (OSError, subprocess.TimeoutExpired):
             return False
 
@@ -1202,22 +1230,27 @@ class Sandbox:
         full = list(argv)
         fds: list[int] = []
         unit = None
+        import secrets as _secrets
+        token = _secrets.token_hex(12)
+        env = scrubbed_env(ws, extra_env, network=network, venv=venv, tmp=tmp)
+        env["JEV_RUN_ID"] = token          # lets the end-of-run sweep find descendants that escaped the tree
         if method in ("bwrap", "unshare", "sandbox-exec"):
             full, fds = self._wrap(method, full, ws, network, mounts, run_cwd, lim)
         elif IS_LINUX and caps.get("cgroup_scope"):
-            import secrets
-            unit = f"jev-run-{secrets.token_hex(6)}"
-            full = [self._exe("systemd-run") or "systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
-                    "-p", f"MemoryMax={int(lim.memory_mb)}M", "-p", "TasksMax=512", "--"] + full
+            unit = f"jev-run-{_secrets.token_hex(6)}"
+            # systemd-run itself needs the user-bus variables; the program must not see them, so it
+            # starts from `env -i` with exactly the scrubbed environment (no secrets in it to leak via argv)
+            full = ([self._exe("systemd-run") or "systemd-run", "--user", "--scope", "--quiet", "--collect",
+                     "--unit", unit, "-p", f"MemoryMax={int(lim.memory_mb)}M", "-p", "TasksMax=512", "--",
+                     self._exe("env") or "/usr/bin/env", "-i"]
+                    + [f"{k}={v}" for k, v in sorted(env.items()) if "\0" not in v and "=" not in k]
+                    + full)
+            env = {**env, **self._bus_env()}
         if not IS_WIN:
             nproc = _user_process_count() + 256
             kind = 0 if IS_LINUX else 1
             spec = f"{lim.cpu_seconds},{lim.memory_mb << 20},{lim.max_output_mb << 20},{nproc},512,{kind}"
             full = [sys.executable, "-I", "-S", "-c", LAUNCHER, spec] + full
-        import secrets as _secrets
-        token = _secrets.token_hex(12)
-        env = scrubbed_env(ws, extra_env, network=network, venv=venv, tmp=tmp)
-        env["JEV_RUN_ID"] = token          # lets the end-of-run sweep find descendants that escaped the tree
         job = None
         kw: dict = {}
         if IS_WIN:

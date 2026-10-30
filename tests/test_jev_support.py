@@ -6,14 +6,42 @@ FakeOllama implements the parts of Ollama's API JEV uses (/api/version, /api/tag
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
+import os
 import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
+
+@functools.lru_cache(maxsize=1)
+def host_sandbox_weak_reasons() -> tuple[str, ...]:
+    """Why this computer's sandbox is weak (empty when it is strong), probed once per test run."""
+    from jev.sandbox import sandbox_for
+    caps = sandbox_for({}).capabilities()
+    return tuple(caps.get("weak_reasons") or ["unknown"]) if caps.get("weak", True) else ()
+
+
+def require_strong_sandbox() -> None:
+    """End-to-end tests that expect code to auto-run need real isolation; on a weak host every code run
+    asks (the locked weak_sandbox row). Skip there, or fail when JEV_REQUIRE_STRONG_SANDBOX=1 (CI),
+    so a broken bubblewrap/AppArmor setup cannot hide behind skips."""
+    reasons = host_sandbox_weak_reasons()
+    if not reasons:
+        return
+    msg = "host sandbox is weak: " + "; ".join(reasons)
+    if os.environ.get("JEV_REQUIRE_STRONG_SANDBOX") == "1":
+        pytest.fail(msg + " (JEV_REQUIRE_STRONG_SANDBOX=1)")
+    pytest.skip(msg)
+
+
+@pytest.fixture
+def strong_sandbox():
+    require_strong_sandbox()
 
 
 def free_port() -> int:

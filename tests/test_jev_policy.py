@@ -24,6 +24,13 @@ def ws(tmp_path):
     return w
 
 
+@pytest.fixture(autouse=True)
+def strong_host_sandbox(monkeypatch):
+    """These tests check the approval table itself, so they pin a strong sandbox; how a weak host
+    sandbox changes decisions is covered in test_jev_security_regressions.py (M1)."""
+    monkeypatch.setattr("jev.policy._sandbox_caps", lambda ctx: {"weak": False, "weak_reasons": []})
+
+
 def ctx_for(ws, settings=None):
     return ToolContext(workspace=ws, settings={**(settings or DEFAULT), "_isolated": True})
 

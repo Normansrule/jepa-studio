@@ -7,7 +7,7 @@ import pytest
 from jev.agent import Runtime, parse_tool_calls
 from jev.llm import MockLLM
 
-from test_jev_support import fake_ollama, jev_env  # noqa: F401 - fixtures
+from test_jev_support import fake_ollama, jev_env, strong_sandbox  # noqa: F401 - fixtures
 
 SQ = "total = sum(i * i for i in range(10))\nprint('sum', total)\nopen('out.csv', 'w').write('n,sq\\n3,9\\n')\n"
 
@@ -35,7 +35,7 @@ def _run(rt, msg, **kw):
     return r, job
 
 
-def test_end_to_end_with_fake_ollama(jev_env):  # noqa: F811
+def test_end_to_end_with_fake_ollama(jev_env, strong_sandbox):  # noqa: F811
     root, fake = jev_env
     fake.script = [
         {"content": "I'll write the script first.",
@@ -232,7 +232,7 @@ def test_busy_conversation_and_cloud_model_refusal(tmp_path):
         rt.start_turn("x", attachments=["../../etc/passwd"])
 
 
-def test_plot_and_artifacts_from_code(tmp_path):
+def test_plot_and_artifacts_from_code(tmp_path, strong_sandbox):  # noqa: F811
     pytest.importorskip("matplotlib")
     script = [{"content": "", "tool_calls": [{"name": "make_plot", "arguments": {
         "kind": "line", "series": [{"name": "sin", "y": [0, 1, 0, -1, 0]}], "title": "wave"}}]},

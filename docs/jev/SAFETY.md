@@ -188,6 +188,29 @@ Notes, honestly:
   Under bubblewrap, the CA bundle file and `/etc/resolv.conf` target are re-exposed read-only for
   such runs only.
 
+### Ubuntu 24.04 and later
+
+Ubuntu 24.04 turned on an AppArmor setting (`kernel.apparmor_restrict_unprivileged_userns=1`)
+that lets only programs with an AppArmor profile create user namespaces. Bubblewrap and `unshare`
+both need them, so without a profile JEV falls back to no isolation, the sandbox counts as
+**weak**, and every code or FFmpeg run asks first. `jev doctor` says so when it detects this.
+
+The fix gives bubblewrap (only `/usr/bin/bwrap`) permission to create user namespaces; the
+profile is `scripts/apparmor/jev-bwrap` in the repository:
+
+```bash
+sudo apt-get install -y bubblewrap apparmor
+sudo install -m 644 scripts/apparmor/jev-bwrap /etc/apparmor.d/jev-bwrap
+sudo apparmor_parser -r /etc/apparmor.d/jev-bwrap
+jev doctor        # isolation should now read "strong" (or "weaker (WSL interop)", see below)
+```
+
+This is the same approach Ubuntu ships for other sandboxing tools. It does not loosen the
+restriction for any other program; to undo it, `sudo rm /etc/apparmor.d/jev-bwrap` and reboot.
+Turning the whole restriction off (`sysctl kernel.apparmor_restrict_unprivileged_userns=0`) also
+works but affects every program, so JEV does not recommend it. JEV's own CI installs this profile
+and fails if the sandbox is weak, so the tests exercise real isolation.
+
 ### WSL (Windows Subsystem for Linux)
 
 WSL2 with bubblewrap is a strong sandbox for files and network, but WSL's **interop** feature

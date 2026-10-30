@@ -1003,6 +1003,18 @@
   },
   {
    "file": "docs/jev/SAFETY.md",
+   "heading": "Ubuntu 24.04 and later",
+   "text": "Ubuntu 24.04 turned on an AppArmor setting (kernel.apparmor_restrict_unprivileged_userns=1)\nthat lets only programs with an AppArmor profile create user namespaces. Bubblewrap and unshare\nboth need them, so without a profile JEV falls back to no isolation, the sandbox counts as\nweak, and every code or FFmpeg run asks first. jev doctor says so when it detects this.\n\nThe fix gives bubblewrap (only /usr/bin/bwrap) permission to create user namespaces; the\nprofile is scripts/apparmor/jev-bwrap in the repository:\n\nsudo apt-get install -y bubblewrap apparmor\nsudo install -m 644 scripts/apparmor/jev-bwrap /etc/apparmor.d/jev-bwrap\nsudo apparmor_parser -r /etc/apparmor.d/jev-bwrap\njev doctor        # isolation should now read \"strong\" (or \"weaker (WSL interop)\", see below)",
+   "url": "https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/jev/SAFETY.md#ubuntu-2404-and-later"
+  },
+  {
+   "file": "docs/jev/SAFETY.md",
+   "heading": "Ubuntu 24.04 and later",
+   "text": "This is the same approach Ubuntu ships for other sandboxing tools. It does not loosen the\nrestriction for any other program; to undo it, sudo rm /etc/apparmor.d/jev-bwrap and reboot.\nTurning the whole restriction off (sysctl kernel.apparmor_restrict_unprivileged_userns=0) also\nworks but affects every program, so JEV does not recommend it. JEV's own CI installs this profile\nand fails if the sandbox is weak, so the tests exercise real isolation.",
+   "url": "https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/jev/SAFETY.md#ubuntu-2404-and-later"
+  },
+  {
+   "file": "docs/jev/SAFETY.md",
    "heading": "WSL (Windows Subsystem for Linux)",
    "text": "WSL2 with bubblewrap is a strong sandbox for files and network, but WSL's interop feature\nlets any Linux process start Windows programs (notepad.exe, powershell.exe, cmd.exe), and a\nWindows program runs as your Windows user, outside every Linux namespace. JEV detects WSL\n(microsoft in the kernel release, /run/WSL) and interop (the WSLInterop binfmt handler is\nenabled) and reports it in jev doctor and GET /api/jev/status (sandbox.wsl,\nsandbox.isolation = \"weaker (WSL interop)\", sandbox.isolation_notes). Inside bubblewrap JEV\nremoves every route it knows of to a Windows program: your Windows drives (/mnt/c, ...),\n/mnt/wsl, /run/WSL (the interop sockets) and WSL's /init (the interop launcher) are not\npart of the sandbox's allowlisted root at all, the WSL_INTEROP variable never\nreaches the sandbox, and AF_VSOCK sockets (the channel to the Windows host) are refused by a\nseccomp filter. What is not verified (the automated tests run on plain Linux): whether a\n.exe file the code writes into the workspace could still be started through the kernel's\nbinfmt handler, which keeps its own reference to /init; without the interop socket and vsock it\nshould fail, but treat it as possible. For a firm boundary turn interop off:",
    "url": "https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/jev/SAFETY.md#wsl-windows-subsystem-for-linux"

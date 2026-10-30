@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from test_jev_support import FakeOllama, free_port
+from test_jev_support import FakeOllama, free_port, strong_sandbox  # noqa: F401 - fixture
 
 
 @pytest.fixture(scope="module")
@@ -122,7 +122,7 @@ def test_status_models_settings(srv):
     req(srv, "/api/jev/settings", body={"default_model": "qwen2.5-coder:7b", "limits": {"wall_seconds": 300}})
 
 
-def test_chat_turn_artifacts_and_downloads(srv):
+def test_chat_turn_artifacts_and_downloads(srv, strong_sandbox):  # noqa: F811
     srv.fake.script = [
         {"content": "", "tool_calls": [
             {"name": "write_file", "arguments": {"path": "page.html", "content": "<script>alert(1)</script>"}},

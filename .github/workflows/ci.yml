@@ -61,7 +61,19 @@ jobs:
           node --version
           node tests/js/engine_gradcheck.mjs
           node tests/js/trainer_smoke.mjs
+      # Ubuntu 24.04 lets only AppArmor-profiled programs create user namespaces, so JEV's
+      # sandbox would be weak (every code run asks). Install the same profile users install
+      # (docs/jev/SAFETY.md) so the tests exercise real isolation.
+      - name: Sandbox (bubblewrap + AppArmor profile)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          sudo install -m 644 scripts/apparmor/jev-bwrap /etc/apparmor.d/jev-bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/jev-bwrap
+          python -c "from jev.sandbox import sandbox_for; import json; print(json.dumps(sandbox_for({}).capabilities(), indent=1))"
       - name: Pytest (not slow; Playwright only if its browser is installed)
+        env:
+          JEV_REQUIRE_STRONG_SANDBOX: "1"
         run: |
           args=(-m "not slow" -rs)
           if ! python -c "import playwright" 2>/dev/null; then

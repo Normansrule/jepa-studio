@@ -733,9 +733,30 @@ pick_model() {
   elif [ -n "$vram" ] && [ "$vram" -ge 7500 ]; then printf 'qwen2.5-coder:7b'
   else printf 'qwen2.5-coder:3b'; fi
 }
+# Ubuntu 24.04+ only lets AppArmor-profiled programs create user namespaces; without a profile for
+# bubblewrap JEV's sandbox is weak and every code run asks. Offer the profile (docs/jev/SAFETY.md).
+jev_sandbox_profile() {
+  local knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns prof="$DEST/scripts/apparmor/jev-bwrap"
+  [ "$(cat "$knob" 2>/dev/null)" = 1 ] || return 0
+  if [ -f /etc/apparmor.d/jev-bwrap ] && have bwrap; then ok "JEV sandbox: AppArmor profile for bubblewrap installed"; return 0; fi
+  [ -f "$prof" ] || return 0
+  info "This Ubuntu blocks user namespaces unless AppArmor allows them, so JEV's sandbox would be weak"
+  info "(every code run asks first). The fix lets only /usr/bin/bwrap create them:"
+  info "  sudo apt-get install -y bubblewrap && sudo install -m 644 $prof /etc/apparmor.d/jev-bwrap && sudo apparmor_parser -r /etc/apparmor.d/jev-bwrap"
+  if ask_yn_strict "Install the bubblewrap AppArmor profile now (uses sudo)?"; then
+    if [ "$DRY_PIP" = 1 ]; then info "[dry-pip] would install bubblewrap and the AppArmor profile"; return 0; fi
+    if sudo apt-get install -y bubblewrap && sudo install -m 644 "$prof" /etc/apparmor.d/jev-bwrap \
+      && sudo apparmor_parser -r /etc/apparmor.d/jev-bwrap; then ok "JEV sandbox: strong (check with: jev doctor)"
+    else warn "profile install failed; JEV still works, but code runs will ask first"; fi
+  else
+    info "skipped. JEV still works; code runs ask first until you run the command above."
+  fi
+}
+
 step_local_ai() {
   step "Local AI for JEV (Ollama)"
   if [ "$NO_AI" = 1 ]; then info "skipped (--no-ai)"; return 0; fi
+  jev_sandbox_profile
   if ! have ollama && ! ollama_up; then
     info "Ollama is not installed. JEV needs it for chat and coding (the JEPA, science and media tools work without it)."
     info "Official installer (downloads and runs https://ollama.com/install.sh with sudo):"
