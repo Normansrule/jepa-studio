@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pick-gguf-file"
+description = "Enables the pick_gguf_file command without any pre-configured scope."
+commands.allow = ["pick_gguf_file"]
+
+[[permission]]
+identifier = "deny-pick-gguf-file"
+description = "Denies the pick_gguf_file command without any pre-configured scope."
+commands.deny = ["pick_gguf_file"]

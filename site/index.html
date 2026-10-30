@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<title>jepa-studio</title>
-<meta name="description" content="Pretrain, inspect and use LeJEPA self-supervised models on your own unlabeled data. Runs in the browser as a demo, or on your machine with the desktop app.">
+<title>JEV Studio</title>
+<meta name="description" content="JEV Studio: a local AI agent that answers, codes, makes images and videos and simulates physics with your own Ollama models, plus LeJEPA models you pretrain and inspect on your own data.">
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/app.css">
 <script type="module" src="js/landing.js"></script>
@@ -14,13 +14,15 @@
 <body class="landing">
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
-  <a class="wordmark" href="index.html" aria-label="jepa-studio home">
+  <a class="wordmark" href="index.html" aria-label="JEV Studio home">
     <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="12" r="4" fill="currentColor"/><path d="M11 12h2" stroke="currentColor" stroke-width="2"/></svg>
-    <span class="name">jepa<i>-studio</i></span>
+    <span class="name">JEV Studio</span>
+    <span class="tagline">local AI agent · JEPA models</span>
   </a>
   <span class="header-spacer"></span>
-  <a href="#how">How it works</a>
-  <a href="#what">What is a JEPA</a>
+  <a href="#jev">What JEV does</a>
+  <a href="#safety">Safety</a>
+  <a href="#what">JEPA</a>
   <a href="#tiers">Web or desktop</a>
   <a href="#download">Download</a>
   <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch to dark theme">
@@ -29,52 +31,78 @@
 </header>
 
 <main id="main">
-  <section class="hero">
+  <section class="hero hero-jev">
     <div>
-      <h1>Teach a model to see, without a single label.</h1>
-      <p class="lede">Pretrain a LeJEPA encoder on your own unlabeled images, watch it learn, and check what it learned. This page trains a small demo model in your browser; the desktop app trains real ones with PyTorch on your CPU or GPU.</p>
+      <h1>An AI agent that runs on your computer.</h1>
+      <p class="lede">JEV answers questions, writes and runs code, makes images and narrated videos, and simulates physics, with language models from your own Ollama. Code runs in a sandbox folder; anything beyond it asks you first. JEV Studio also pretrains and inspects JEPA models on your own unlabeled data.</p>
       <div class="cta">
-        <a class="btn primary" href="app.html#train">Train in the browser</a>
-        <a class="btn" href="#download">Get the desktop app</a>
+        <a class="btn primary" href="#download">Get the desktop app</a>
+        <a class="btn" href="app.html#science">See the black hole</a>
+        <a class="btn" href="app.html#train">Train a JEPA in the browser</a>
       </div>
     </div>
-    <figure class="hero-figure" aria-labelledby="hero-cap">
+    <figure class="transcript" aria-labelledby="transcript-cap">
+      <div>
+        <p class="who">You</p>
+        <p class="t-you">Render a spinning black hole, make a 10-second video circling it, and save it to my Videos folder.</p>
+      </div>
+      <div>
+        <p class="who">JEV <span class="hint who-model">qwen2.5-coder:7b</span></p>
+        <div class="msg-body">
+          <section class="tool-card" data-state="done" aria-label="Tool render_black_hole">
+            <header class="tc-head"><code class="tc-name">render_black_hole</code><span class="risk" data-risk="sandbox"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l8.2 4.6v9.2L12 21.2l-8.2-4.6V7.4z"/><path d="M3.8 7.4L12 12l8.2-4.6"/><path d="M12 12v9.2"/></svg><span>Sandbox</span></span><span class="tc-state"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Done</span></span></header>
+            <p>spin 0.9, 1280 × 720, 240 frames: <code>black_hole.mp4</code></p>
+          </section>
+          <section class="tool-card" data-state="asked" aria-label="Tool save_file">
+            <header class="tc-head"><code class="tc-name">save_file</code><span class="risk" data-risk="approve"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l7.5 3v5.9c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V5.8z"/><path d="M12 8v4.6"/><path d="M12 15.6v.01"/></svg><span>Asks first</span></span><span class="tc-state"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>You approved once</span></span></header>
+            <p>Copy <code>black_hole.mp4</code> to <code>~/Videos</code>: outside the sandbox, so it asked.</p>
+          </section>
+          <p class="t-jev">Done. The bright left side of the disk is the side moving toward the camera; its light is Doppler-boosted.</p>
+        </div>
+      </div>
+      <figcaption id="transcript-cap">An example turn. Each tool shows its risk level; only the save outside the sandbox needed your OK.</figcaption>
+    </figure>
+  </section>
+
+  <section class="section" id="jev" aria-labelledby="jev-title">
+    <h2 id="jev-title">What JEV does</h2>
+    <p class="sub">One chat, many tools, all local. JEV picks the tool, shows you every call as it runs, and keeps the files it makes in the conversation.</p>
+    <ul class="caps-list">
+      <li><h3>Answer</h3><p>Explains, summarizes and quotes the documents and files you give it.</p></li>
+      <li><h3>Code</h3><p>Writes Python, runs it in a sandbox folder with time and memory limits, and reads the output.</p></li>
+      <li><h3>Images</h3><p>Charts, diagrams, slides, renders, and image models you install yourself.</p></li>
+      <li><h3>Video</h3><p>Narrated explainers with local text-to-speech, and highlight cuts of your own footage.</p></li>
+      <li><h3>Physics</h3><p>A ray-traced Kerr black hole, N-body gravity, pendulums and waves, as stills or video.</p></li>
+    </ul>
+  </section>
+
+  <section class="section" id="safety" aria-labelledby="safety-title">
+    <h2 id="safety-title">What it may do on its own</h2>
+    <p class="sub">Every tool declares a risk level, and the backend, not the model, decides what runs. Nothing leaves your computer unless you approve it.</p>
+    <ul class="safety-rows">
+      <li><span class="risk" data-risk="read"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><span>Read only</span></span><p>Runs at once. Changes nothing.</p><p class="ex">Answering, maths, listing the conversation's files.</p></li>
+      <li><span class="risk" data-risk="sandbox"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l8.2 4.6v9.2L12 21.2l-8.2-4.6V7.4z"/><path d="M3.8 7.4L12 12l8.2-4.6"/><path d="M12 12v9.2"/></svg><span>Sandbox</span></span><p>Runs at once, inside the conversation's own folder, with limits.</p><p class="ex">Running code, renders, assembling a video.</p></li>
+      <li><span class="risk" data-risk="approve"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l7.5 3v5.9c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V5.8z"/><path d="M12 8v4.6"/><path d="M12 15.6v.01"/></svg><span>Asks first</span></span><p>Waits for you: Approve once, Approve for this session, or Deny.</p><p class="ex">The network, files outside the sandbox, installing or deleting, downloading models.</p></li>
+    </ul>
+    <p class="more"><a href="https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/jev/SAFETY.md">The full safety model, and what it does not protect against</a></p>
+  </section>
+
+  <section class="section" id="what" aria-labelledby="what-title">
+    <h2 id="what-title">JEPA models, on your own data</h2>
+    <p class="sub">The studio's second half pretrains LeJEPA encoders on your unlabeled images, video or time series, shows what they learned, and plans in a learned world model. A joint-embedding predictive architecture never reconstructs pixels: it learns an embedding in which different views of the same thing land close together.</p>
+    <div class="jepa-grid">
+      <figure class="hero-figure" aria-labelledby="hero-cap">
       <div class="equation" aria-label="L equals one minus lambda times L pred plus lambda times L SIGReg">
         <var>L</var> = (1 − <var>λ</var>) <span class="term t-pred"><var>L</var><sub>pred</sub></span> + <var>λ</var> <span class="term t-sig"><var>L</var><sub>SIGReg</sub></span>
       </div>
       <canvas id="hero-canvas" role="img" aria-label="Histogram of embeddings projected on one random direction, moving from a collapsed spike to a standard Gaussian while the Epps-Pulley statistic falls"></canvas>
       <figcaption id="hero-cap"><span>One random projection of a batch of embeddings, against N(0, 1). SIGReg's Epps–Pulley statistic: <b id="hero-ep">–</b></span><button class="btn" id="hero-replay" type="button">Replay</button></figcaption>
     </figure>
-  </section>
-
-  <section class="section how" id="how" aria-labelledby="how-title">
-    <h2 id="how-title">How it works</h2>
-    <ol class="how-steps">
-      <li>
-        <span class="how-n" aria-hidden="true">1</span>
-        <h3><a href="app.html#data">Load data</a></h3>
-        <p>Start with the built-in Shapes, or drop a folder of your own images. Files are decoded in the page and never uploaded.</p>
-      </li>
-      <li>
-        <span class="how-n" aria-hidden="true">2</span>
-        <h3><a href="app.html#train">Train</a></h3>
-        <p>Pick a preset and press Start. In the browser a 218k-parameter demo model trains in about a minute; the desktop app trains real encoders with PyTorch from the same config file.</p>
-      </li>
-      <li>
-        <span class="how-n" aria-hidden="true">3</span>
-        <h3><a href="app.html#inspect">See what it learned</a></h3>
-        <p>Rotate the embedding cloud, check the collapse detector, find nearest neighbours, then score it with a few labels.</p>
-      </li>
-    </ol>
-  </section>
-
-  <section class="section" id="what" aria-labelledby="what-title">
-    <h2 id="what-title">What a JEPA learns</h2>
-    <p class="sub">A joint-embedding predictive architecture never reconstructs pixels. It learns an embedding in which different views of the same thing land close together, and LeJEPA adds one rule that keeps that embedding from cheating.</p>
-    <div class="explain-cols">
+    <div class="explain-cols stacked">
       <div class="c-view"><div class="rule"></div><h3>Views</h3><p>Each image is cropped, recoloured and flipped into two large global views and several small local views. They share content, not pixels.</p></div>
       <div class="c-pred"><div class="rule"></div><h3>Predict the centre</h3><p>The encoder maps every view to a vector. The prediction loss pulls each vector toward the mean of the global views: whatever survives cropping is what matters.</p></div>
       <div class="c-sig"><div class="rule"></div><h3>Stay Gaussian</h3><p>Agreement alone is solved by mapping everything to one point. SIGReg tests random 1-D projections of the batch against N(0, 1), so the embedding must stay spread out and isotropic.</p></div>
+    </div>
     </div>
     <figure class="flow-figure" aria-labelledby="flow-cap">
       <svg viewBox="0 0 960 190" role="img" aria-labelledby="flow-cap">
@@ -95,9 +123,30 @@
     </figure>
   </section>
 
+  <section class="section how" id="how" aria-labelledby="how-title">
+    <h2 id="how-title">Train a JEPA in three steps</h2>
+    <ol class="how-steps">
+      <li>
+        <span class="how-n" aria-hidden="true">1</span>
+        <h3><a href="app.html#data">Load data</a></h3>
+        <p>Start with the built-in Shapes, or drop a folder of your own images. Files are decoded in the page and never uploaded.</p>
+      </li>
+      <li>
+        <span class="how-n" aria-hidden="true">2</span>
+        <h3><a href="app.html#train">Train</a></h3>
+        <p>Pick a preset and press Start. In the browser a 218k-parameter demo model trains in about a minute; the desktop app trains real encoders with PyTorch from the same config file.</p>
+      </li>
+      <li>
+        <span class="how-n" aria-hidden="true">3</span>
+        <h3><a href="app.html#inspect">See what it learned</a></h3>
+        <p>Rotate the embedding cloud, check the collapse detector, find nearest neighbours, then score it with a few labels.</p>
+      </li>
+    </ol>
+  </section>
+
   <section class="section" id="tiers" aria-labelledby="tiers-title">
     <h2 id="tiers-title">In the browser, or on your machine</h2>
-    <p class="sub">The website is the same app as the desktop build. In a browser it trains a small demo model locally; the desktop app runs full PyTorch training on your CPU or GPU.</p>
+    <p class="sub">The website is the same app as the desktop build. In a browser it trains a small JEPA demo model and runs the Science tab; JEV and full PyTorch training need the desktop app.</p>
     <div class="table-wrap">
       <table class="cap-table">
         <thead><tr><th scope="col">Capability</th><th scope="col">Web demo (this site)</th><th scope="col">Desktop app</th></tr></thead>
@@ -108,21 +157,21 @@
 
   <section class="section" id="download" aria-labelledby="download-title">
     <h2 id="download-title">Download</h2>
-    <p class="sub">Installers are built by CI and attached to each GitHub release, with SHA-256 checksums. The app only listens on 127.0.0.1 and never uploads your data.</p>
+    <p class="sub">Installers are built by CI and attached to each GitHub release, with SHA-256 checksums. The app only listens on 127.0.0.1 and never uploads your data. For JEV, also install <a href="https://ollama.com/download">Ollama</a> and download one model; the app's Doctor shows the commands.</p>
     <div class="downloads">
-      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>Windows</b><span>.msi installer, x64</span></a>
-      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>macOS</b><span>.dmg, Apple silicon and Intel</span></a>
-      <a class="dl" href="https://github.com/Normansrule/jepa-studio/releases/latest"><b>Linux</b><span>.AppImage and .deb</span></a>
+      <a class="dl" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest"><b>Windows</b><span>.msi installer, x64</span></a>
+      <a class="dl" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest"><b>macOS</b><span>.dmg, Apple silicon and Intel</span></a>
+      <a class="dl" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest"><b>Linux</b><span>.AppImage and .deb</span></a>
     </div>
-    <pre class="cli" aria-label="Command line install">pip install jepa-studio
-jepa-studio train --config configs/shapes-quickstart.json
-jepa-studio serve        # the same UI, backed by PyTorch</pre>
+    <pre class="cli" aria-label="Command line install">ollama pull qwen2.5-coder:7b   # JEV's default model (about 4.7 GB)
+pip install "jepa-studio[jev]"  # the Python package: JEPA tools and the JEV backend
+jepa-studio serve             # the same UI on 127.0.0.1, backed by PyTorch and JEV</pre>
   </section>
 </main>
 
 <footer class="site-footer">
-  <span>jepa-studio. Method: Balestriero &amp; LeCun, <a href="https://arxiv.org/abs/2511.08544">LeJEPA</a> (2025). Fonts: Latin Modern (GUST Font License).</span>
-  <span><a href="app.html">Open the app</a></span>
+  <span>JEV Studio. JEPA method: Balestriero &amp; LeCun, <a href="https://arxiv.org/abs/2511.08544">LeJEPA</a> (2025). Fonts: Latin Modern (GUST Font License).</span>
+  <span><a href="https://github.com/Normansrule/jev-jepa-studio">Source</a> · <a href="app.html">Open the app</a></span>
 </footer>
 </body>
 </html>

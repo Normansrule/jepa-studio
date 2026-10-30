@@ -71,7 +71,7 @@ def split_markdown(path: Path) -> list[dict]:
 @lru_cache(maxsize=1)
 def doc_passages() -> tuple:
     ps = []
-    for p in sorted(DOCS_DIR.glob("*.md")):
+    for p in sorted(DOCS_DIR.rglob("*.md")):            # docs/ and docs/jev/
         ps += split_markdown(p)
     readme = DOCS_DIR.parent / "README.md"
     if readme.exists():

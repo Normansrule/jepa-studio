@@ -1,4 +1,4 @@
-# Desktop app (Tauri 2 shell in desktop/): build on Windows, macOS and Linux for every change to
+# Desktop app, JEV Studio (Tauri 2 shell in desktop/): build on Windows, macOS and Linux for every change to
 # the shell, the site or the backend; on a v* tag, publish a GitHub release with every installer
 # and a SHA256SUMS.txt.
 #
@@ -15,6 +15,7 @@ on:
       - desktop/**
       - site/**
       - jepa_studio/**
+      - jev/**
       - requirements-desktop.txt
       - .github/workflows/desktop.yml
   pull_request:
@@ -22,6 +23,7 @@ on:
       - desktop/**
       - site/**
       - jepa_studio/**
+      - jev/**
       - requirements-desktop.txt
       - .github/workflows/desktop.yml
   workflow_dispatch:
@@ -126,7 +128,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: jepa-studio-${{ matrix.name }}
+          name: jev-studio-${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
@@ -141,7 +143,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: jepa-studio-*
+          pattern: jev-studio-*
           path: dist
           merge-multiple: true
 
@@ -161,6 +163,6 @@ jobs:
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "jepa-studio $TAG" \
-            --notes "Desktop installers for Windows (.msi, setup .exe), macOS (.dmg, .app) and Linux (.deb, .AppImage). Verify downloads against SHA256SUMS.txt (sha256sum -c SHA256SUMS.txt --ignore-missing). The first launch installs a private Python environment; see docs/desktop.md." \
+            --title "JEV Studio $TAG" \
+            --notes "Desktop installers for Windows (.msi, setup .exe), macOS (.dmg, .app) and Linux (.deb, .AppImage). Verify downloads against SHA256SUMS.txt (sha256sum -c SHA256SUMS.txt --ignore-missing). The first launch installs a private Python environment; see docs/desktop.md. The JEV agent also needs Ollama (https://ollama.com) and one model; see docs/jev/README.md." \
             $prerelease

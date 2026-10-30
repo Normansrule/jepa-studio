@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security problems **privately** through GitHub's private vulnerability reporting:
-<https://github.com/Normansrule/jepa-studio/security/advisories/new>. Don't open a public issue
+<https://github.com/Normansrule/jev-jepa-studio/security/advisories/new>. Don't open a public issue
 for anything exploitable.
 
 Useful to include: what an attacker controls (a weights file, a dataset, a web page, text in a

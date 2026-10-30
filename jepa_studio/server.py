@@ -8,7 +8,9 @@ Security model (docs/SECURITY_MODEL.md, "local privilege boundaries"):
     http(s)://tauri.localhost) or the same host; no wildcard CORS
   * JSON bodies only, capped at 2 MB; data paths must be inside the folders the user granted
     (JEPA_STUDIO_ALLOWED_DIRS, set by the shell from the folder picker)
-  * no endpoint runs user-supplied code or reaches the network
+  * no endpoint runs user-supplied code or reaches the network; the JEV agent's routes
+    (/api/jev/*, jev/api.py) sit behind the same guard and run code only in jev.sandbox, with
+    risky actions gated by jev.policy approvals (docs/jev/SAFETY.md)
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import sys
 import threading
 import traceback
@@ -365,7 +368,7 @@ def make_handler(studio: Studio, token: str, port_ref: list):
                 return
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", o)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-JEPA-Token")
             self.send_header("Access-Control-Max-Age", "600")
             self.end_headers()
@@ -409,6 +412,8 @@ def make_handler(studio: Studio, token: str, port_ref: list):
                     raise ApiError(404, "not found")
                 p = parts[1:]
                 body = self._body() if method == "POST" else {}
+                if p[:1] == ["jev"]:
+                    return self._jev(method, p[1:], q, body)
                 s = studio
                 routes = {
                     ("GET", ("health",)): lambda: {"ok": True, "version": __version__},
@@ -449,8 +454,63 @@ def make_handler(studio: Studio, token: str, port_ref: list):
                 traceback.print_exc(file=sys.stderr)
                 self._send(500, {"error": f"internal error: {type(e).__name__}"})
 
+        def _jev(self, method: str, parts: list, q: dict, body: dict):
+            """JEV agent routes (jev/api.py). Same guard as above; adds streamed file responses."""
+            from jev.api import FileResponse, HttpError, get_api
+
+            try:
+                res = get_api(studio.root, studio).handle(method, parts, q, body)
+            except HttpError as e:
+                raise ApiError(e.status, str(e)) from e
+            if isinstance(res, FileResponse):
+                return self._send_file(res)
+            return self._send(200, res)
+
+        def _send_file(self, f) -> None:
+            from urllib.parse import quote
+
+            # open first, without following a final symlink or blocking on a FIFO, and send that file
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | \
+                getattr(os, "O_BINARY", 0)
+            try:
+                fd = os.open(f.path, flags)
+            except OSError:
+                return self._send(404, {"error": "file is gone or is not a regular file"})
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                os.close(fd)
+                return self._send(403, {"error": "not a regular file"})
+            if hasattr(os, "set_blocking"):
+                os.set_blocking(fd, True)
+            fh_open = os.fdopen(fd, "rb")
+            size = st.st_size
+            ascii_name = re.sub(r'[^A-Za-z0-9._ -]', "_", f.filename) or "file"
+            self.send_response(200)
+            self.send_header("Content-Type", f.mime)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition",
+                             f"{f.disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(f.filename)}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            o = self._origin()
+            if o:
+                self.send_header("Access-Control-Allow-Origin", o)
+                self.send_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Length")
+                self.send_header("Vary", "Origin")
+            self.end_headers()
+            try:
+                with fh_open as fh:
+                    while chunk := fh.read(f.chunk):
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True   # the viewer went away mid-download
+
         def do_GET(self):  # noqa: N802
             self._dispatch("GET")
+
+        def do_DELETE(self):  # noqa: N802
+            self._dispatch("DELETE")
 
         def do_POST(self):  # noqa: N802
             self._dispatch("POST")

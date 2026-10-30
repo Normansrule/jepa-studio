@@ -7,7 +7,7 @@ someone can check.
 ## Development setup
 
 ```bash
-git clone https://github.com/Normansrule/jepa-studio && cd jepa-studio
+git clone https://github.com/Normansrule/jev-jepa-studio && cd jev-jepa-studio
 python -m venv .venv && source .venv/bin/activate
 # optional, smaller download on machines without a GPU:
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
@@ -20,7 +20,7 @@ pip install -e ".[dev]"            # pytest, playwright, ruff
 it installs missing apt packages (one `sudo apt-get install`, plus the GitHub CLI), unpacks to
 `~/jepa-studio` (an existing clone is updated in place, history kept), builds a conda env or a
 `.venv` with PyTorch (CUDA if `nvidia-smi` works, else CPU), runs the tests, then commits, pushes
-to `Normansrule/jepa-studio` (SSH host alias if it signs in as Normansrule, else HTTPS through
+to `Normansrule/jev-jepa-studio` (SSH host alias if it signs in as Normansrule, else HTTPS through
 `gh`), switches Pages to GitHub Actions and optionally pushes a `v*` tag for the installers.
 
 ```bash

@@ -140,8 +140,26 @@ export class DesktopBackend {
       referrerPolicy: 'no-referrer',
     });
     const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(j.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return j;
+  }
+
+  /** GET a file (artifact) with the token header. Resolves to a Blob. Only same-backend paths. */
+  async blob(path) {
+    if (typeof path !== 'string' || !path.startsWith('/api/')) throw new Error('not a backend path');
+    const res = await fetch(this.base + path, {
+      headers: { 'X-JEPA-Token': this.token }, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer',
+    });
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.blob();
   }
 
   onEvent(f) { this.listeners.add(f); return () => this.listeners.delete(f); }

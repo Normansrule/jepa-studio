@@ -1,6 +1,19 @@
-# jepa-studio documentation
+# JEV Studio documentation
 
-Start with the [project README](../README.md). Then pick what you need:
+Start with the [project README](../README.md). Then pick what you need.
+
+## JEV, the local AI agent
+
+| Page | What it covers |
+|---|---|
+| [jev/README.md](jev/README.md) | What JEV is, how it is built, installing Ollama and models on Windows, macOS, Linux and WSL. |
+| [jev/SAFETY.md](jev/SAFETY.md) | Sandbox auto-run and the approval safety net: what runs freely, what always asks, what each OS enforces, the audit log, running fully offline. |
+| [jev/api.md](jev/api.md) | The `/api/jev/*` routes and event shapes. |
+| [jev/ui.md](jev/ui.md) | The JEV and Science tabs: chat, tool cards, approvals, gallery, models and settings. |
+| [jev/science.md](jev/science.md) | The Interstellar-style black-hole ray tracer (Kerr geodesics, accretion disk, redshift) and the physics simulations, with validation numbers and references. |
+| [jev/media.md](jev/media.md) | Narrated explainer videos, footage editing, images and optional local generative models. |
+
+## JEPA models
 
 | Page | What it covers |
 |---|---|

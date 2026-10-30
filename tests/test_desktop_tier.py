@@ -104,7 +104,7 @@ def _page(browser, backend, picked: Path):
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "Failed to load resource" not in m.text
             else None)
     page.route("**/*", _serve_site)
-    page.goto(f"http://127.0.0.1:{backend['port']}/app.html")
+    page.goto(f"http://127.0.0.1:{backend['port']}/app.html#data")      # the desktop tier opens on JEV otherwise
     t0 = time.time()
     while page.get_attribute("html", "data-ready") != "true":
         assert time.time() - t0 < 30, "app did not become ready"
@@ -184,4 +184,23 @@ def test_desktop_refuses_folder_outside_grant(browser, backend):
         or "grant" in page.text_content("#data-status"), page.text_content("#data-status")
     cfg = json.loads(page.evaluate("() => JSON.stringify(window.jepaApp.config.data)"))
     assert cfg["path"] is None and cfg["kind"] == "synthetic-shapes"
+    ctx.close()
+
+
+def test_jev_tab_against_the_real_backend(browser, backend):
+    """The JEV tab talks to the real /api/jev/status: the strip and the Doctor say whether Ollama
+    is reachable (it is not, on CI), and Send stays disabled with the reason."""
+    ctx, page, errors = _page(browser, backend, backend["data"])
+    page.click("#tab-jev")
+    assert page.is_visible("#jev-desk")
+    _wait(page, lambda: page.get_attribute("#st-ollama", "data-status") in ("good", "bad"), timeout=30)
+    text = page.text_content("#st-ollama")
+    assert "Ollama" in text or "JEV" in text, text
+    if page.get_attribute("#st-ollama", "data-status") == "bad":
+        page.fill("#jev-input", "hello")
+        page.dispatch_event("#jev-input", "input")
+        assert page.is_disabled("#jev-send") and page.is_visible("#jev-send-why")
+    page.click("#jev-doctor-btn")
+    _wait(page, lambda: page.locator("#doctor-checks li").count() >= 3, timeout=10)
+    assert not errors, errors
     ctx.close()
