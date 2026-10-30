@@ -32,3 +32,6 @@ Thumbs.db
 .idea/
 .vscode/
 pytest-report.xml
+
+# JEV agent data (settings, SQLite store, workspaces) when the backend root is the checkout
+jev-data/

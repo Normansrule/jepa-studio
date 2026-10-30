@@ -1,6 +1,6 @@
 //! First-launch setup: find a system Python >= 3.10, create a private venv in the app's local data
 //! folder, pick a PyTorch wheel index for the detected accelerator, and pip-install the pinned
-//! requirements plus the bundled `jepa_studio` package (with `--no-deps`).
+//! requirements plus the bundled `jepa_studio` and `jev` packages (with `--no-deps`).
 //!
 //! Everything that decides something is a pure function with unit tests at the bottom; the rest
 //! runs processes and reports progress through a callback.
@@ -233,9 +233,9 @@ pub fn find_python() -> Result<(PythonCmd, (u32, u32)), String> {
     }
     let found = if seen.is_empty() { "no Python interpreter was found on PATH".to_string() } else { seen.join(", ") };
     Err(format!(
-        "jepa-studio needs Python {}.{} or newer to set up its private environment ({found}). \
+        "JEV Studio needs Python {}.{} or newer to set up its private environment ({found}). \
          Install it from https://www.python.org/downloads/ (on Windows tick \"Add python.exe to PATH\" \
-         or keep the py launcher), then start jepa-studio again.",
+         or keep the py launcher), then start JEV Studio again.",
         MIN_PYTHON.0, MIN_PYTHON.1
     ))
 }
@@ -363,19 +363,36 @@ fn pip(py: &Path) -> Command {
     c
 }
 
-/// Copy the bundled package source to a writable staging folder (setuptools writes egg-info next
+/// Data files shipped inside the packages (schemas, shader sources, notes, templates).
+const DATA_GLOBS: &str = "\"*.json\", \"**/*.json\", \"*.txt\", \"**/*.txt\", \"*.md\", \"**/*.md\", \
+    \"*.glsl\", \"**/*.glsl\", \"*.wgsl\", \"**/*.wgsl\", \"*.toml\", \"**/*.toml\"";
+
+/// The minimal pyproject.toml for the staged sources: `jepa_studio`, plus `jev` when bundled.
+pub fn pyproject_toml(version: &str, with_jev: bool) -> String {
+    let (include, jev_data) = if with_jev {
+        ("[\"jepa_studio*\", \"jev*\"]".to_string(), format!("jev = [{DATA_GLOBS}]\n"))
+    } else {
+        ("[\"jepa_studio*\"]".to_string(), String::new())
+    };
+    format!(
+        "[build-system]\nrequires = [\"setuptools>=69\", \"wheel\"]\nbuild-backend = \"setuptools.build_meta\"\n\n\
+         [project]\nname = \"jepa-studio\"\nversion = \"{version}\"\nrequires-python = \">=3.10\"\n\n\
+         [tool.setuptools.packages.find]\ninclude = {include}\n\n\
+         [tool.setuptools.package-data]\njepa_studio = [{DATA_GLOBS}]\n{jev_data}"
+    )
+}
+
+/// Copy the bundled package sources to a writable staging folder (setuptools writes egg-info next
 /// to the sources, and the bundle may live on a read-only volume) with a minimal pyproject.toml.
-fn stage_package(bundled_pkg: &Path, staging: &Path, version: &str) -> Result<(), String> {
+/// `jev` (the local agent) is installed from the same staging folder when the bundle has it.
+fn stage_package(bundled_pkg: &Path, bundled_jev: Option<&Path>, staging: &Path, version: &str) -> Result<(), String> {
     let _ = fs::remove_dir_all(staging);
     copy_tree(bundled_pkg, &staging.join("jepa_studio"))
         .map_err(|e| format!("copying {}: {e}", bundled_pkg.display()))?;
-    let pyproject = format!(
-        "[build-system]\nrequires = [\"setuptools>=69\", \"wheel\"]\nbuild-backend = \"setuptools.build_meta\"\n\n\
-         [project]\nname = \"jepa-studio\"\nversion = \"{version}\"\nrequires-python = \">=3.10\"\n\n\
-         [tool.setuptools.packages.find]\ninclude = [\"jepa_studio*\"]\n\n\
-         [tool.setuptools.package-data]\njepa_studio = [\"*.json\", \"**/*.json\"]\n"
-    );
-    fs::write(staging.join("pyproject.toml"), pyproject).map_err(|e| e.to_string())
+    if let Some(j) = bundled_jev {
+        copy_tree(j, &staging.join("jev")).map_err(|e| format!("copying {}: {e}", j.display()))?;
+    }
+    fs::write(staging.join("pyproject.toml"), pyproject_toml(version, bundled_jev.is_some())).map_err(|e| e.to_string())
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -399,6 +416,8 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub struct SetupPaths {
     pub data_dir: PathBuf,
     pub bundled_pkg: PathBuf,
+    /// The bundled `jev` package (python/jev); `None` only in a bundle built without it.
+    pub bundled_jev: Option<PathBuf>,
 }
 
 /// Create or refresh the private environment. Returns the interpreter to run the backend with.
@@ -495,12 +514,12 @@ pub fn ensure_env(
     c.args(["install", "-r"]).arg(&req_file);
     run_logged(c, log, &|l| progress(None, "Installing the remaining pinned packages", l))?;
 
-    progress(Some(0.9), "Installing jepa-studio", "");
+    progress(Some(0.9), "Installing JEV Studio (jepa_studio and jev)", "");
     let staging = paths.data_dir.join("pkg-src");
-    stage_package(&paths.bundled_pkg, &staging, app_version)?;
+    stage_package(&paths.bundled_pkg, paths.bundled_jev.as_deref(), &staging, app_version)?;
     let mut c = pip(&py);
     c.args(["install", "--no-deps", "--force-reinstall", "--no-cache-dir"]).arg(&staging);
-    run_logged(c, log, &|l| progress(None, "Installing jepa-studio", l))?;
+    run_logged(c, log, &|l| progress(None, "Installing JEV Studio", l))?;
     let _ = fs::remove_dir_all(&staging);
 
     let rec = SetupRecord {
@@ -631,6 +650,36 @@ mod tests {
             torch_pins("# torch==1\ntorch-geometric==2\nTorch == 2.1 ; python_version>'3'\n"),
             vec!["Torch == 2.1 ; python_version>'3'"]
         );
+    }
+
+    #[test]
+    fn pyproject_installs_jev_when_bundled() {
+        let with = pyproject_toml("0.4.0", true);
+        assert!(with.contains("include = [\"jepa_studio*\", \"jev*\"]"), "{with}");
+        assert!(with.contains("version = \"0.4.0\""));
+        assert!(with.contains("\njev = [") && with.contains("\njepa_studio = ["));
+        let without = pyproject_toml("0.4.0", false);
+        assert!(without.contains("include = [\"jepa_studio*\"]") && !without.contains("jev"));
+    }
+
+    #[test]
+    fn staging_copies_both_packages() {
+        let d = std::env::temp_dir().join(format!("jev-stage-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (pkg, jev) = (d.join("src/jepa_studio"), d.join("src/jev"));
+        fs::create_dir_all(pkg.join("data")).unwrap();
+        fs::create_dir_all(jev.join("tools").join("__pycache__")).unwrap();
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(jev.join("__init__.py"), "").unwrap();
+        fs::write(jev.join("tools").join("base.py"), "").unwrap();
+        fs::write(jev.join("tools").join("__pycache__").join("x.pyc"), "").unwrap();
+        let staging = d.join("staging");
+        stage_package(&pkg, Some(&jev), &staging, "0.4.0").unwrap();
+        assert!(staging.join("jepa_studio/__init__.py").is_file());
+        assert!(staging.join("jev/tools/base.py").is_file());
+        assert!(!staging.join("jev/tools/__pycache__").exists());
+        assert!(fs::read_to_string(staging.join("pyproject.toml")).unwrap().contains("\"jev*\""));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

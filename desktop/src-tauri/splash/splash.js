@@ -20,6 +20,14 @@
       bar.removeAttribute('aria-valuenow');
     }
     if (typeof s.line === 'string' && s.line) $('line').textContent = s.line;
+    if (s.ollama) {
+      const o = s.ollama;
+      const el = $('ollama');
+      el.dataset.state = o.reachable ? 'ok' : 'missing';
+      el.textContent = o.reachable
+        ? 'Ollama is running' + (o.version ? ' (' + o.version + ')' : '') + ': JEV can use your local models.'
+        : 'Ollama is not running on this computer. JEV needs it to chat (install it from ollama.com); the JEPA tools work without it.';
+    }
     if (s.phase === 'error') {
       bar.classList.remove('indeterminate');
       bar.hidden = true;

@@ -67,3 +67,7 @@ code { user-select: text; -webkit-user-select: text; word-break: break-all; }
   .bar span { transition: none; }
   .bar.indeterminate span { animation: none; width: 100%; opacity: 0.5; }
 }
+
+.ollama { margin: 12px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--ink-2); font-size: 12.5px; }
+.ollama[data-state="ok"] { border-left-color: var(--accent); }
+.ollama[data-state="missing"] { border-left-color: #b07a00; }

@@ -1,16 +1,16 @@
 [package]
-name = "jepa-studio"
-version = "0.3.1"
-description = "Desktop shell for jepa-studio: runs the local PyTorch backend and shows the site/ front end"
+name = "jev-studio"
+version = "0.4.0"
+description = "Desktop shell for JEV Studio: runs the local backend (JEPA + JEV) and shows the site/ front end"
 authors = ["Aleksander Norman"]
 license = "MIT"
-repository = "https://github.com/Normansrule/jepa-studio"
+repository = "https://github.com/Normansrule/jev-jepa-studio"
 edition = "2021"
 rust-version = "1.82"
 publish = false
 
 [[bin]]
-name = "jepa-studio"
+name = "jev-studio"
 path = "src/main.rs"
 
 [build-dependencies]

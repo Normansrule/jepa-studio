@@ -1,5 +1,6 @@
-// App shell: picks the backend (web demo or desktop), owns shared state, routes tabs.
-// Tabs live in site/js/tabs/*.js; each exports init(app) and optionally show(app).
+// JEV Studio app shell: picks the backend (web demo or desktop), owns shared state, routes tabs.
+// Tabs live in site/js/tabs/*.js; each exports init(app) and optionally show(app). JEV (the local
+// agent, desktop tier) and Science (both tiers) come first; Data → Export is the JEPA workflow.
 // Shared UI: ui/fields.js (validated inputs), ui/help.js (info disclosures), ui/stepper.js
 // (progress), ui/toast.js (notices), ui/prefs.js (per-viewer preferences, storage-safe).
 import { makeBackend, detectTier } from './backend.js';
@@ -12,6 +13,8 @@ import { initHelp } from './ui/help.js';
 import { initStepper } from './ui/stepper.js';
 import { initToasts, notify } from './ui/toast.js';
 import { getPref, setPref, getRaw, setRaw } from './ui/prefs.js';
+import * as jevTab from './tabs/jev.js';
+import * as scienceTab from './tabs/science.js';
 import * as dataTab from './tabs/data.js';
 import * as trainTab from './tabs/train.js';
 import * as inspectTab from './tabs/inspect.js';
@@ -20,9 +23,9 @@ import * as worldTab from './tabs/world.js';
 import * as explainTab from './tabs/explain.js';
 import * as exportTab from './tabs/export.js';
 
-export const APP_VERSION = '0.3.1';
+export const APP_VERSION = '0.4.0';
 
-const tabs = { data: dataTab, train: trainTab, inspect: inspectTab, evaluate: evalTab, world: worldTab, explain: explainTab, export: exportTab };
+const tabs = { jev: jevTab, science: scienceTab, data: dataTab, train: trainTab, inspect: inspectTab, evaluate: evalTab, world: worldTab, explain: explainTab, export: exportTab };
 
 function setupTheme() {
   const btn = document.getElementById('theme-toggle');
@@ -96,11 +99,17 @@ async function main() {
       if (n) notify('info', `${what} reset to defaults`);
     });
   }
-  // Last tab: the URL hash wins; otherwise reopen the tab this viewer used last.
+  // Last tab: the URL hash wins; otherwise reopen the tab this viewer used last; otherwise JEV on
+  // the desktop and the Data tab (the JEPA demo that runs in the browser) on the web.
   const lastTab = getPref('tab');
-  if (!location.hash && typeof lastTab === 'string' && tabs[lastTab]) history.replaceState(null, '', `#${lastTab}`);
+  if (!location.hash) {
+    const first = typeof lastTab === 'string' && tabs[lastTab] ? lastTab : app.tier === 'desktop' ? 'jev' : 'data';
+    history.replaceState(null, '', `#${first}`);
+  }
+  const stepperBar = document.getElementById('stepper-bar');
   const router = setupTabs(document.querySelector('[role="tablist"]'), {
     onChange: (name) => {
+      stepperBar.hidden = name === 'jev' || name === 'science';   // the stepper is the JEPA workflow
       const t = tabs[name];
       if (t && t.show) t.show(app);
       setPref('tab', name);

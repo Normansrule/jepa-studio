@@ -3,74 +3,109 @@
 JEV's routes are mounted on the same local backend as the JEPA routes (`jepa-studio serve`,
 see [../api.md](../api.md)): `127.0.0.1` only, the per-session `X-JEPA-Token` header on every
 request, the `Host`/`Origin` checks, JSON bodies capped at 2 MB. Large outputs (images, videos)
-are files in the workspace, fetched by URL, never inlined.
+are files in the workspace, fetched by URL, never inlined. Implementation: `jev/api.py`
+(routes), `jepa_studio/server.py` (`_jev`, `_send_file`: the guard and streamed file responses).
 
-Long operations (a chat turn, a render) run in a background thread and are followed by
-polling an event log, the same pattern as training runs: `GET .../events?since=<n>` returns
-`{events: [...], next: <n>}`.
+JEV keeps its data in `<root>/jev-data/` (`settings.json`, `jev.db`, `workspaces/<conversation>/`,
+`exports/`). It is not `<root>/jev/` because in a source checkout the root is the repository,
+where `jev/` is the Python package.
 
-## Status and models
+Long operations (a chat turn, a render, a model download) run in a background thread and are
+followed by polling an event log, the same pattern as training runs:
+`GET .../events?since=<n>` returns `{events: [...], next: <n>, status}`. Every event has
+`i` (its index), `t` (unix time) and `event`. Jobs live in memory: after a backend restart
+their event logs are gone (conversations, messages, artifacts and the audit log are in SQLite).
+
+Errors are `{error: "..."}` with: 400 bad input, 401 token, 403 outside the workspace / granted
+folders or refused by `approval_rules`, 404 unknown id, 409 the conversation is still answering,
+413 file too large, 421 bad Host, 501 science module not installed, 502 Ollama returned an
+error, 503 Ollama isn't running (the message says how to start it).
+
+## Status, settings and models
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| GET | `/api/jev/status` | | `{version, ollama: {url, reachable, version, error?}, default_model, models: [...], tools: [{name, description, risk, category}], workspace_root, sandbox: {network_isolation, limits}, gpu}` |
-| GET | `/api/jev/models` | | `{models: [{name, size_bytes, family, parameter_size, quantization, digest, modified}]}` (from Ollama `/api/tags`) |
-| POST | `/api/jev/models/pull` | `{name}` | `{approval_id}` always; downloading a model is an approval-gated action. After approval, progress events go to `/api/jev/jobs/<job_id>/events` |
-| POST | `/api/jev/models/import` | `{gguf_path, name}` | `{approval_id}`; imports a local GGUF file you own into Ollama with a Modelfile (`FROM <path>`), recording its SHA-256 |
-| DELETE | `/api/jev/models/<name>` | | `{approval_id}` (deleting asks) |
-| POST | `/api/jev/settings` | `{default_model?, limits?, network_allowed?}` | the new settings |
+| GET | `/api/jev/status` | | `{version, ollama: {url, reachable, version, error?}, default_model, models: [model], tools: [{name, description, risk, category}], workspace_root, data_dir, sandbox: {method, network_isolation, filesystem, rlimits, process_tree_kill, windows_job, probe, limits}, network_allowed, gpu: {cuda, mps, devices: [{name, memory_gb}]}, approval_rules: [{rule, default, action, covers, locked}]}` |
+| GET | `/api/jev/models` | | `{models: [model], imported: [{name, path, sha256, bytes, created}]}`; `model` = `{name, size_bytes, family, parameter_size, quantization, digest, modified, remote}` (from Ollama `/api/tags`; `remote: true` marks Ollama cloud models, which JEV refuses unless `allow_cloud_models`) |
+| POST | `/api/jev/models/pull` | `{name}` | `{approval_id, status: "pending"}`; downloading a model is an approval-gated action. Approving returns `job_id`; progress goes to `/api/jev/jobs/<job_id>/events`. If you set the `model_download` (and `network`) rows to `run` in `approval_rules`, the reply is `{approval_id, status: "auto_run", job_id}` |
+| POST | `/api/jev/models/import` | `{gguf_path, name}` | `{approval_id, status}`; imports a local GGUF file you own (it must be inside a folder granted to JEPA Studio) into Ollama, recording its SHA-256 (in `models`, and in the job's `done` event) |
+| DELETE | `/api/jev/models/<name>` | | `{approval_id, status}` (deleting asks). URL-encode the name (`llama3.1%3A8b`; `/` as `%2F`) |
+| GET | `/api/jev/settings` | | the settings below plus `rules` (the approval table) |
+| POST | `/api/jev/settings` | `{default_model?, limits?: {cpu_seconds, memory_mb, wall_seconds, max_output_mb, max_file_mb}, network_allowed?, ollama_url?}` | the new settings. `ollama_url` must be loopback unless `allow_remote_ollama` is set **in the file**; `approval_rules`, `allow_remote_ollama`, `allow_cloud_models` can only be changed by editing `jev-data/settings.json` (400 otherwise); limits outside sane bounds are refused |
 
 ## Conversations and turns
 
 | Method | Path | Body / query | Returns |
 |---|---|---|---|
-| POST | `/api/jev/chat` | `{message, conversation_id?, model?, attachments?: [workspace paths]}` | `{conversation_id, turn_id}` |
-| GET | `/api/jev/turns/<turn_id>/events` | `?since=<n>` | `{events, next, status}` |
-| POST | `/api/jev/turns/<turn_id>/cancel` | | `{ok}` |
+| POST | `/api/jev/chat` | `{message, conversation_id?, model?, attachments?: [workspace paths]}` | `{conversation_id, turn_id}`; 409 while that conversation is still answering |
+| GET | `/api/jev/turns/<turn_id>/events` | `?since=<n>` | `{events, next, status}`; `status` is `running`, `waiting_approval`, `done`, `error` or `cancelled` |
+| POST | `/api/jev/turns/<turn_id>/cancel` | | `{ok}`; running code is killed, a pending approval is closed as `cancelled` |
 | GET | `/api/jev/conversations` | | `{conversations: [{id, title, created, updated, model}]}` |
-| GET | `/api/jev/conversations/<id>` | | `{id, title, messages: [...], artifacts: [...]}` |
-| DELETE | `/api/jev/conversations/<id>` | | `{approval_id}` (deletes its workspace too, so it asks) |
+| POST | `/api/jev/conversations` | `{title?, model?}` | `{id, title, model, workspace, created, updated}` (an empty conversation, e.g. to upload files first) |
+| GET | `/api/jev/conversations/<id>` | | `{id, title, model, workspace, created, updated, messages: [{id, role, content, tool_calls, tool_name, turn_id, created}], artifacts: [artifact]}` |
+| DELETE | `/api/jev/conversations/<id>` | | `{approval_id, status}` (deletes its rows and workspace too, so it asks; the audit rows stay with their arguments redacted) |
+| GET | `/api/jev/conversations/<id>/export` | | a zip (`Content-Disposition: attachment`): `conversation.json` (messages, turns, tool calls, approvals, artifacts) and `files/` (the workspace, without `.venv`) |
+| POST | `/api/jev/conversations/<id>/files` | `{name, data_base64}` (or `content_base64`; <= ~1.5 MB so the body stays under 2 MB) or `{name, from_path}` (a file inside a folder granted to JEPA Studio) | `{path, name, bytes, artifact}`; `name` is a path inside the workspace |
 
 Turn event records (`event` field):
 
 | event | fields | meaning |
 |---|---|---|
-| `start` | `model` | the turn began |
-| `token` | `text` | streamed model text |
-| `tool_call` | `call_id, name, args, risk, decision` | the model asked for a tool; `decision` is `run`, `ask` or `deny` |
-| `approval_request` | `approval_id, call_id, name, args, reason` | waiting for you (`/api/jev/approvals/<id>`) |
-| `progress` | `call_id, fraction, message` | from a running tool |
-| `tool_result` | `call_id, ok, content, artifacts: [{id, path, kind, mime, title, url}]` | |
-| `artifact` | `{id, path, kind, mime, title, url}` | also listed in tool_result |
-| `done` | `text` | final answer |
+| `start` | `model, conversation_id` | the turn began |
+| `token` | `text` | streamed model text (a tool call written as text is held back, not streamed) |
+| `tool_call` | `call_id, name, args, risk, decision, reason` | the model asked for a tool; `decision` is `run`, `ask` or `deny` (strings in `args` are cut at 20 000 characters) |
+| `approval_request` | `approval_id, call_id, name, args, reason, risk, rules` | waiting for you (`/api/jev/approvals/<id>`); the turn's `status` is `waiting_approval` |
+| `approval_result` | `approval_id, call_id, status` | `approved`, `denied`, `expired` (no answer within `approval_timeout_s`, default 30 min) or `cancelled` |
+| `progress` | `call_id, fraction, message` | from a running tool (`fraction` may be `null` when unknown) |
+| `tool_result` | `call_id, ok, content, artifacts: [artifact], data?` | `content` is what the model reads (<= ~4000 chars) |
+| `artifact` | `id, path, kind, mime, title, bytes, sha256, url` | also listed in tool_result |
+| `done` | `text, rounds` | final answer (`rounds` = tool rounds used, at most `max_tool_rounds`, default 12) |
 | `error` | `message` | |
 | `cancelled` | | |
+
+`artifact` = `{id, path, kind, mime, title, bytes, sha256, url}`; `kind` is one of `image`,
+`video`, `audio`, `code`, `text`, `data`, `model`, `other`; `path` is relative to the workspace.
 
 ## Approvals (the safety net)
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/api/jev/approvals` | `?status=pending` | `{approvals: [{id, created, tool, args, reason, risk, conversation_id, turn_id, status}]}` |
-| POST | `/api/jev/approvals/<id>` | `{decision: "approve" \| "deny", remember?: "session" \| null}` | `{ok, status}` |
+| GET | `/api/jev/approvals` | `?status=pending` | `{approvals: [{id, created, kind, tool, args, reason, risk, rules, conversation_id, turn_id, call_id, status, decided_by, decided, remember, job_id}]}` (newest first, at most 500) |
+| POST | `/api/jev/approvals/<id>` | `{decision: "approve" \| "deny", remember?: "session" \| null}` | `{ok, status, job_id?, note?}`; `job_id` when approving started a job (model pull/import/delete, a long render). Deciding twice returns `{ok: false, status}` |
 
-Every decision (including automatic ones) is written to the audit log in the SQLite store.
-`remember: "session"` allows the same tool with the same argument *shape* for the rest of the
-backend session only; nothing is remembered across restarts.
+Every decision (including automatic ones) is written to the audit log in the SQLite store:
+`status` is `auto_run`, `auto_deny`, `remembered` (automatic), or `pending`, `approved`,
+`denied`, `expired`, `cancelled`, `failed`; `decided_by` is `policy`, `session`, `settings`,
+`user`, `terminal`, `timeout` or `restart`. `kind` is `tool`, `model_pull`, `model_import`,
+`model_delete`, `conversation_delete` or `science`.
+`remember: "session"` allows the same tool with the same argument *shape* (the same argument
+names and the same approval rows triggered) for the rest of the backend session only; nothing
+is remembered across restarts, and deletes, model downloads/imports/deletes and sending data
+off the machine are never remembered (`note` says so).
 
 ## Artifacts
 
 | Method | Path | Returns |
 |---|---|---|
-| GET | `/api/jev/artifacts/<id>` | the file bytes with its content type (`Content-Disposition: inline`), streamed; only files inside a workspace |
-| GET | `/api/jev/artifacts` | `?conversation_id=` → `{artifacts: [...]}` |
+| GET | `/api/jev/artifacts/<id>` | the file bytes with its content type (`Content-Disposition: inline`), streamed in 256 KB chunks with `Content-Length`; only files inside a workspace (the stored path is re-resolved, symlinks included, on every request: 403 otherwise) |
+| GET | `/api/jev/artifacts` | `?conversation_id=` → `{artifacts: [artifact]}` |
 
 `url` fields are `/api/jev/artifacts/<id>`; the front end fetches them with the token header and
-shows them via `blob:` URLs (the CSP allows `img-src`/`media-src` `blob:`).
+shows them via `blob:` URLs (the CSP allows `img-src`/`media-src` `blob:`). Responses carry
+`X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`.
+Model-written HTML, JavaScript and XML are served as `text/plain; charset=utf-8` (the artifact
+record keeps the original `mime`): never render them as documents or iframes in the app's origin.
+SVG keeps `image/svg+xml`; show it only through `<img>`.
 
 ## Science (no model needed)
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/jev/science/blackhole` | `{spin, inclination_deg, distance_M, disk: {...}, width, height, frames?, seconds?}` | `{job_id}`; result artifact(s) via `/api/jev/jobs/<job_id>/events` |
-| POST | `/api/jev/science/simulate` | `{kind: "nbody" \| "pendulum" \| "wave" \| ..., params}` | `{job_id}` |
-| GET | `/api/jev/jobs/<job_id>/events` | `?since=` | `{events, next, status}` (same event shapes as turns) |
+| POST | `/api/jev/science/blackhole` | `{spin, inclination_deg, distance_M, disk: {...}, width, height, frames?, seconds?}` | `{job_id, estimate_s}`; result artifact(s) via `/api/jev/jobs/<job_id>/events`. A render the science module estimates at over 10 minutes needs approval first: `{approval_id, status: "pending", reason, args, estimate_s}`, and approving it returns the `job_id` |
+| POST | `/api/jev/science/simulate` | `{kind: "nbody" \| "pendulum" \| "wave" \| ..., params}` | `{job_id}` (or an approval as above) |
+| GET | `/api/jev/jobs/<job_id>/events` | `?since=` | `{events, next, status}` (same event shapes as turns; science jobs end with `done {text, artifacts}`, model jobs with `done {text, sha256?}`) |
+| POST | `/api/jev/jobs/<job_id>/cancel` | | `{ok}` |
+| GET | `/api/jev/jobs` | | `{jobs: [{id, kind, status, created, finished, meta, events}]}` (last 100) |
+
+Renders over 7680 × 4320 pixels or 20 000 frames are refused (400). One heavy job (render,
+pull, import) runs at a time; others wait in `queued`.

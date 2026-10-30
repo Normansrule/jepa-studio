@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<title>jepa-studio app</title>
-<meta name="description" content="Pretrain, inspect and use LeJEPA models on your own unlabeled data, in the browser.">
+<title>JEV Studio</title>
+<meta name="description" content="JEV Studio: a local AI agent (desktop app) and LeJEPA models you pretrain, inspect and use on your own unlabeled data, plus a live black hole and physics simulations.">
 <link rel="icon" href="img/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/app.css">
 <script type="module" src="js/app.js"></script>
@@ -14,9 +14,10 @@
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
-  <a class="wordmark" href="index.html" aria-label="jepa-studio home">
+  <a class="wordmark" href="index.html" aria-label="JEV Studio home">
     <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="12" r="4" fill="currentColor"/><path d="M11 12h2" stroke="currentColor" stroke-width="2"/></svg>
-    <span class="name">jepa<i>-studio</i></span>
+    <span class="name">JEV Studio</span>
+    <span class="tagline">local AI agent · JEPA models</span>
   </a>
   <span class="header-spacer"></span>
   <span class="tier-badge" id="tier-badge" data-tier="web" title="Which engine runs your training">
@@ -28,7 +29,10 @@
   </button>
 </header>
 
-<nav class="tabbar" role="tablist" aria-label="Workflow">
+<nav class="tabbar" role="tablist" aria-label="Sections">
+  <button role="tab" id="tab-jev" data-tab="jev" aria-controls="panel-jev" aria-selected="false" tabindex="-1">JEV<span class="tab-count" id="jev-tab-count" aria-hidden="true" hidden></span></button>
+  <button role="tab" id="tab-science" data-tab="science" aria-controls="panel-science" aria-selected="false" tabindex="-1">Science</button>
+  <span class="tab-sep" aria-hidden="true"></span>
   <button role="tab" id="tab-data" data-tab="data" aria-controls="panel-data" aria-selected="true">Data</button>
   <button role="tab" id="tab-train" data-tab="train" aria-controls="panel-train" aria-selected="false" tabindex="-1">Train<span class="tab-state" id="train-dot" data-on="false" aria-hidden="true"></span></button>
   <button role="tab" id="tab-inspect" data-tab="inspect" aria-controls="panel-inspect" aria-selected="false" tabindex="-1">Inspect</button>
@@ -39,7 +43,7 @@
 </nav>
 
 <main id="main">
-<nav class="stepper-bar" aria-label="Progress through the workflow">
+<nav class="stepper-bar" id="stepper-bar" aria-label="Progress through the JEPA workflow">
   <ol class="stepper" id="stepper">
     <li data-step="data" data-state="upcoming"><button type="button" data-goto="data"><span class="mark" aria-hidden="true"><span class="n">1</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Data</span><span class="visually-hidden state"></span></button></li>
     <li data-step="trained" data-state="upcoming"><button type="button" data-goto="train"><span class="mark" aria-hidden="true"><span class="n">2</span><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="lbl">Train</span><span class="visually-hidden state"></span></button></li>
@@ -49,6 +53,223 @@
   </ol>
   <p class="stepper-hint" id="stepper-hint"></p>
 </nav>
+
+<!-- ============================================================== JEV -->
+<section role="tabpanel" id="panel-jev" aria-labelledby="tab-jev" tabindex="0" hidden>
+  <div id="jev-web" class="jev-web">
+    <div class="jev-web-main">
+      <h2>JEV runs on your computer</h2>
+      <p class="lede">JEV is a local AI agent. It answers questions, writes and runs code, makes images and narrated videos, and simulates physics, using language models that <a href="https://ollama.com">Ollama</a> serves on your own machine. A website can't reach Ollama or run programs, so JEV needs the desktop app.</p>
+      <div class="btn-row">
+        <a class="btn primary" id="jev-download" href="https://github.com/Normansrule/jev-jepa-studio/releases/latest">Get the desktop app</a>
+        <button class="btn" id="jev-goto-science" type="button">Open Science (works here)</button>
+      </div>
+      <p class="hint">Free and open source, for Windows, macOS (Apple silicon) and Linux. You also need Ollama (free) and one model, about 5 GB. The JEPA tabs and Science work in this browser.</p>
+    </div>
+    <div class="jev-web-side">
+      <h3>What JEV can do</h3>
+      <ul class="can-list">
+        <li><b>Answer and explain</b>, quoting the files and docs it read.</li>
+        <li><b>Write and run code</b> in a sandbox folder, and show you the output.</li>
+        <li><b>Make images and narrated videos</b> from slides, renders and your own footage.</li>
+        <li><b>Simulate physics</b>: a ray-traced spinning black hole, gravity, pendulums, waves.</li>
+      </ul>
+      <h3>What it may do without asking</h3>
+      <ul class="risk-legend">
+        <li><span class="risk" data-risk="read"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><span>Read only</span></span> runs at once: answering, maths, reading its own workspace.</li>
+        <li><span class="risk" data-risk="sandbox"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l8.2 4.6v9.2L12 21.2l-8.2-4.6V7.4z"/><path d="M3.8 7.4L12 12l8.2-4.6"/><path d="M12 12v9.2"/></svg><span>Sandbox</span></span> runs at once, but only inside the conversation's folder, with time and memory limits.</li>
+        <li><span class="risk" data-risk="approve"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l7.5 3v5.9c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V5.8z"/><path d="M12 8v4.6"/><path d="M12 15.6v.01"/></svg><span>Asks first</span></span> network, your files, installing, deleting: never without your OK.</li>
+      </ul>
+      <p><a href="https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/jev/SAFETY.md">How the safety net works</a></p>
+    </div>
+  </div>
+
+  <div id="jev-desk" hidden>
+    <div class="jev-strip">
+      <ul class="strip-items" aria-label="JEV status">
+        <li class="strip-item" id="st-ollama" data-status="idle">Checking Ollama…</li>
+        <li class="strip-item" id="st-model" data-status="idle"></li>
+        <li class="strip-item" id="st-net" data-status="idle"></li>
+        <li class="strip-item" id="st-gpu" data-status="idle"></li>
+      </ul>
+      <div class="strip-actions">
+        <button class="btn" id="jev-approvals-btn" type="button" aria-expanded="false" aria-controls="jev-approvals">Approvals<span class="count-badge" id="jev-waiting" hidden></span></button>
+        <button class="btn" id="jev-doctor-btn" type="button" aria-expanded="false" aria-controls="jev-doctor">Doctor</button>
+      </div>
+    </div>
+
+    <section class="panel jev-sheet" id="jev-doctor" hidden tabindex="-1" aria-labelledby="doctor-title">
+      <div class="panel-head">
+        <h3 id="doctor-title">Doctor</h3>
+        <div class="btn-row">
+          <div class="seg" role="radiogroup" aria-label="Commands for">
+            <label><input type="radio" name="doc-os" value="macos"><span>macOS</span></label>
+            <label><input type="radio" name="doc-os" value="windows"><span>Windows</span></label>
+            <label><input type="radio" name="doc-os" value="linux"><span>Linux</span></label>
+          </div>
+          <button class="btn" id="doctor-recheck" type="button">Check again</button>
+          <button class="btn" type="button" data-close-panel="jev-doctor">Close</button>
+        </div>
+      </div>
+      <ul class="doctor-checks" id="doctor-checks"></ul>
+    </section>
+
+    <section class="panel jev-sheet" id="jev-approvals" hidden tabindex="-1" aria-labelledby="approvals-title">
+      <div class="panel-head"><h3 id="approvals-title">Approvals</h3><button class="btn" type="button" data-close-panel="jev-approvals">Close</button></div>
+      <h4 class="sub-h">Waiting for you</h4>
+      <div id="jev-pending"></div>
+      <div class="section-head"><h4>History</h4><button class="link-btn" id="history-refresh" type="button">Refresh</button></div>
+      <p class="hint">Every decision is written to the audit log on this computer, including the ones made automatically for read-only and sandbox tools.</p>
+      <div class="table-wrap"><table class="data appr-history"><caption class="visually-hidden">Approval history</caption><thead><tr><th scope="col">When</th><th scope="col">Tool</th><th scope="col">What</th><th scope="col">Decision</th></tr></thead><tbody id="jev-history"></tbody></table></div>
+    </section>
+
+    <div class="jev-layout">
+      <nav class="jev-convs panel" aria-labelledby="convs-title">
+        <div class="panel-head"><h3 id="convs-title">Conversations</h3><button class="btn" id="jev-new" type="button">New</button></div>
+        <ul class="conv-list" id="jev-conv-list"></ul>
+      </nav>
+
+      <section class="jev-chat panel" aria-labelledby="jev-conv-title">
+        <div class="jev-chat-head">
+          <button class="btn jev-convs-toggle" id="jev-convs-toggle" type="button" aria-haspopup="dialog">Conversations</button>
+          <h3 id="jev-conv-title">New conversation</h3>
+        </div>
+        <div class="jev-log" id="jev-log" role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="jev-conv-title" tabindex="0"></div>
+        <div class="jev-starters" id="jev-starters">
+          <p class="hint" id="starters-title">Start with one of these, or ask anything.</p>
+          <ul id="jev-starter-list" aria-labelledby="starters-title"></ul>
+        </div>
+        <p class="visually-hidden" id="jev-turn-status" role="status"></p>
+        <div class="jev-composer" id="jev-composer" data-ready="false">
+          <ul class="chips" id="jev-attach" hidden aria-label="Files to send"></ul>
+          <label class="visually-hidden" for="jev-input">Message to JEV</label>
+          <textarea id="jev-input" rows="2" maxlength="20000" placeholder="Ask JEV. Enter sends, Shift+Enter starts a new line." aria-describedby="jev-send-why"></textarea>
+          <div class="composer-row">
+            <label class="btn file-btn" title="Attach files, or drop them on this box"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 7.5l-7.6 7.6a2 2 0 0 0 2.8 2.8l8-8a4 4 0 0 0-5.7-5.7l-8.1 8.1a6 6 0 0 0 8.5 8.5L20 15"/></svg><span>Attach</span><input id="jev-files" type="file" multiple aria-label="Attach files"></label>
+            <label class="visually-hidden" for="jev-model">Model</label>
+            <select id="jev-model" disabled><option value="">Loading models…</option></select>
+            <button class="btn" id="jev-pull-btn" type="button" aria-expanded="false" aria-controls="jev-pull-form">Download a model</button>
+            <span class="row-spacer"></span>
+            <button class="btn primary" id="jev-send" type="button" disabled>Send</button>
+            <button class="btn" id="jev-stop" type="button" hidden>Stop</button>
+          </div>
+          <div class="pull-form" id="jev-pull-form" hidden>
+            <label for="jev-pull-name">Model name from the Ollama library</label>
+            <div class="row"><input id="jev-pull-name" type="text" list="jev-pull-suggest" placeholder="qwen2.5:7b" autocomplete="off" spellcheck="false"><button class="btn" id="jev-pull-go" type="button">Request download</button></div>
+            <datalist id="jev-pull-suggest"><option value="qwen2.5:7b"></option><option value="qwen2.5:3b"></option><option value="qwen2.5-coder:7b"></option><option value="llama3.1:8b"></option><option value="llama3.2:3b"></option></datalist>
+            <p class="hint">Downloads always ask first. Models that can call tools work best (Qwen 2.5, Llama 3.1 and newer).</p>
+            <p class="hint" id="jev-pull-status" role="status"></p>
+            <div class="progress" id="jev-pull-bar" role="progressbar" aria-label="Model download" aria-valuemin="0" aria-valuemax="100" hidden><div></div></div>
+          </div>
+          <p class="why" id="jev-send-why" hidden></p>
+          <p class="visually-hidden" id="attach-status" role="status"></p>
+        </div>
+      </section>
+
+      <aside class="jev-files panel" aria-labelledby="gallery-title">
+        <div class="panel-head"><h3 id="gallery-title">Files</h3><span class="hint" id="jev-gallery-count"></span></div>
+        <div class="gallery" id="jev-gallery"></div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== SCIENCE -->
+<section role="tabpanel" id="panel-science" aria-labelledby="tab-science" tabindex="0" hidden>
+  <div class="tab-intro">
+    <div><h2>Science</h2><p>A black hole you can orbit, and three physics simulations, drawn live on your graphics card.</p></div>
+    <div class="seg" role="radiogroup" aria-label="What to show">
+      <label><input type="radio" name="sci-view" value="blackhole" checked><span>Black hole</span></label>
+      <label><input type="radio" name="sci-view" value="sims"><span>Simulations</span></label>
+    </div>
+  </div>
+  <div class="layout">
+    <div class="panel controls">
+      <div id="sci-bh" class="ctl-section">
+        <div class="section-head"><h4>Black hole</h4><button class="link-btn" type="button" data-reset="science-bh" aria-label="Reset the black hole settings to their defaults">Reset to defaults</button></div>
+        <div class="field"><label for="bh-spin">Spin, a/M</label><div class="row"><input id="bh-spin" type="range" min="0" max="0.99" step="0.01" value="0.9"></div><p class="hint" id="bh-spin-note" hidden></p></div>
+        <div class="field"><label for="bh-distance">Camera distance, in units of M</label><div class="row"><input id="bh-distance" type="range" min="6" max="60" step="1" value="25"></div></div>
+        <div class="field"><label for="bh-incl">Viewing angle from the spin axis, degrees</label><div class="row"><input id="bh-incl" type="range" min="0" max="90" step="1" value="80"></div></div>
+        <div class="switch-stack">
+          <label class="switch"><input type="checkbox" id="bh-disk" checked> Accretion disk</label>
+          <label class="switch"><input type="checkbox" id="bh-doppler" checked> Doppler colour shift</label>
+          <label class="switch"><input type="checkbox" id="bh-beaming" checked> Relativistic beaming</label>
+        </div>
+        <div class="field"><label for="bh-quality">Quality</label><select id="bh-quality"><option value="low">Low: smooth on any GPU</option><option value="medium" selected>Medium</option><option value="high">High: sharper, slower</option></select></div>
+        <div class="btn-row"><button class="btn" id="bh-snapshot" type="button">Save snapshot (PNG)</button></div>
+        <div class="desktop-only mt-m" hidden><button class="btn primary" id="bh-render" type="button">Render high-quality video on this computer</button></div>
+      </div>
+      <div id="sci-sims" class="ctl-section" hidden>
+        <div class="section-head"><h4>Simulation</h4><button class="link-btn" type="button" data-reset="science-sim" aria-label="Reset the simulation settings to their defaults">Reset to defaults</button></div>
+        <div class="field"><label for="sim-kind">System</label><select id="sim-kind"><option value="nbody">N-body gravity</option><option value="double_pendulum">Double pendulum</option><option value="wave">Waves on a membrane</option></select></div>
+        <div data-sim-kind="nbody">
+          <div class="field"><label for="sim-bodies">Bodies</label><div class="row"><input id="sim-bodies" type="range" min="2" max="200" step="1" value="60"></div></div>
+          <div class="field"><label for="sim-nbody-speed">Time speed</label><div class="row"><input id="sim-nbody-speed" type="range" min="0.1" max="4" step="0.1" value="1"></div></div>
+        </div>
+        <div data-sim-kind="double_pendulum" hidden>
+          <div class="field"><label for="sim-theta1">Upper arm start angle, degrees</label><div class="row"><input id="sim-theta1" type="range" min="-180" max="180" step="1" value="120"></div></div>
+          <div class="field"><label for="sim-theta2">Lower arm start angle, degrees</label><div class="row"><input id="sim-theta2" type="range" min="-180" max="180" step="1" value="-20"></div></div>
+          <div class="field"><label for="sim-mass-ratio">Mass ratio, lower to upper</label><div class="row"><input id="sim-mass-ratio" type="range" min="0.1" max="10" step="0.1" value="1"></div></div>
+          <div class="field"><label for="sim-pend-speed">Time speed</label><div class="row"><input id="sim-pend-speed" type="range" min="0.1" max="4" step="0.1" value="1"></div></div>
+        </div>
+        <div data-sim-kind="wave" hidden>
+          <div class="field"><label for="sim-wave-speed">Wave speed</label><div class="row"><input id="sim-wave-speed" type="range" min="0.2" max="3" step="0.1" value="1"></div></div>
+          <div class="field"><label for="sim-wave-damping">Damping</label><div class="row"><input id="sim-wave-damping" type="range" min="0" max="0.02" step="0.001" value="0.002"></div></div>
+          <div class="field"><label for="sim-wave-freq">Source frequency</label><div class="row"><input id="sim-wave-freq" type="range" min="0.2" max="5" step="0.1" value="1.5"></div></div>
+        </div>
+        <div class="btn-row"><button class="btn" id="sim-reset" type="button">Restart</button></div>
+        <div class="desktop-only mt-m" hidden><button class="btn primary" id="sim-render" type="button">Render video on this computer</button></div>
+      </div>
+      <div class="desktop-only render-opts" hidden>
+        <div class="section-head"><h4>Video render</h4></div>
+        <div class="grid-2 tight">
+          <div class="field"><label for="sci-res">Resolution</label><select id="sci-res"><option value="1280x720" selected>1280 × 720</option><option value="1920x1080">1920 × 1080</option><option value="640x360">640 × 360 (quick)</option></select></div>
+          <div class="field"><label for="sci-seconds">Length</label><select id="sci-seconds"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="20">20 s</option></select></div>
+        </div>
+        <p class="hint" id="sci-job-status" role="status">Renders run on this computer’s CPU or GPU and are saved as MP4.</p>
+        <div class="progress" id="sci-job-bar" role="progressbar" aria-label="Render progress" aria-valuemin="0" aria-valuemax="100" hidden><div></div></div>
+      </div>
+      <p class="hint mt-m" id="sci-web-note">The desktop app can also render these as high-quality videos on your computer.</p>
+    </div>
+    <div class="stack">
+      <figure class="panel sci-stage" id="sci-stage" data-state="idle" aria-labelledby="sci-stage-title">
+        <div class="panel-head"><h3 id="sci-stage-title">Black hole</h3><span class="hint" id="sci-status" role="status"></span></div>
+        <div class="sci-canvas-wrap">
+          <canvas id="sci-canvas" role="img" aria-label="Rendered black hole"></canvas>
+          <div class="sci-fallback" id="sci-fallback" hidden>
+            <p><strong>Live view unavailable.</strong> <span id="sci-fallback-text"></span></p>
+            <button class="btn" id="sci-retry" type="button">Try again</button>
+          </div>
+        </div>
+      </figure>
+      <div class="panel desktop-only" hidden>
+        <div class="panel-head"><h3>Rendered on this computer</h3><span class="hint" id="sci-gallery-count"></span></div>
+        <div class="gallery wide" id="sci-gallery"></div>
+      </div>
+      <div class="panel sci-explain">
+        <div data-explain="blackhole">
+          <h3>What you are seeing</h3>
+          <p>The dark disc is the black hole's <b>shadow</b>: every ray of light aimed inside it falls in. The thin bright ring at its edge is light that orbited the hole before escaping.</p>
+          <p>The disk lies flat around the hole, yet its far side shows above and below the shadow: gravity bends that light over the top and under the bottom (<b>gravitational lensing</b>).</p>
+          <p>The side of the disk moving toward you is brighter and bluer (<b>Doppler shift</b> and <b>beaming</b>); the side moving away is dimmer and redder. The film <i>Interstellar</i> left these out to keep its black hole symmetric; switch them off to see that look.</p>
+          <p><b>Spin</b> drags space around with the hole, so prograde orbits get closer and one edge of the shadow flattens.</p>
+        </div>
+        <div data-explain="nbody" hidden>
+          <h3>What you are seeing</h3>
+          <p>Every body pulls on every other one with Newton's inverse-square gravity. Close encounters fling bodies out; pairs that lose energy settle into orbits around each other.</p>
+        </div>
+        <div data-explain="double_pendulum" hidden>
+          <h3>What you are seeing</h3>
+          <p>A pendulum hanging from a pendulum is <b>chaotic</b>: change a starting angle by a fraction of a degree and after a few swings the motion is completely different. The equations are simple; prediction is not.</p>
+        </div>
+        <div data-explain="wave" hidden>
+          <h3>What you are seeing</h3>
+          <p>The two-dimensional wave equation on a membrane: a source pushes the surface up and down, ripples spread at the wave speed, reflect from the edges and interfere. Damping slowly takes energy out.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <!-- ============================================================== DATA -->
 <section role="tabpanel" id="panel-data" aria-labelledby="tab-data" tabindex="0">
@@ -480,8 +701,42 @@
 </main>
 
 <footer class="site-footer">
-  <span>jepa-studio <span id="app-version"></span>. Files you open never leave this device.</span>
-  <span><a href="index.html">About</a> · <a href="https://arxiv.org/abs/2511.08544">LeJEPA paper</a></span>
+  <span>JEV Studio <span id="app-version"></span>. Files you open never leave this device.</span>
+  <span><a href="index.html">About</a> · <a href="https://github.com/Normansrule/jev-jepa-studio">Source</a> · <a href="https://arxiv.org/abs/2511.08544">LeJEPA paper</a></span>
 </footer>
+
+<dialog class="approval" id="jev-approval" aria-labelledby="appr-title" aria-describedby="appr-what">
+  <div class="appr-top">
+    <svg class="appr-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8l7.5 3v5.9c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V5.8z"/><path d="M12 8v4.6"/><path d="M12 15.6v.01"/></svg>
+    <div>
+      <p class="hint appr-n" id="appr-n"></p>
+      <h2 id="appr-title">Allow JEV to continue?</h2>
+    </div>
+  </div>
+  <p class="appr-what" id="appr-what"></p>
+  <dl class="appr-facts">
+    <div><dt id="appr-exact-label">Details</dt><dd><pre class="appr-exact" id="appr-exact" tabindex="0" aria-labelledby="appr-exact-label"></pre></dd></div>
+    <div><dt>Why it asks</dt><dd id="appr-why"></dd></div>
+    <div><dt>Tool</dt><dd class="appr-tool-row"><code id="appr-tool"></code><span id="appr-risk"></span></dd></div>
+  </dl>
+  <details class="appr-more"><summary>All arguments</summary><pre id="appr-args" tabindex="0"></pre></details>
+  <p class="field-error" id="appr-error" role="alert" hidden></p>
+  <div class="btn-row appr-actions">
+    <button class="btn" id="appr-deny" type="button">Deny</button>
+    <button class="btn" id="appr-session" type="button">Approve for this session</button>
+    <button class="btn primary" id="appr-once" type="button">Approve once</button>
+  </div>
+  <p class="hint appr-foot">Esc denies. “For this session” allows this tool with the same kind of arguments until JEV Studio closes; nothing is remembered after that.</p>
+</dialog>
+
+<dialog class="lightbox" id="jev-lightbox" aria-labelledby="lb-title">
+  <div class="lb-bar"><p class="lb-title" id="lb-title"></p><a class="btn lb-download" href="#" download>Download</a><button class="btn lb-close" type="button">Close</button></div>
+  <img alt="">
+</dialog>
+
+<dialog class="drawer" id="jev-convs-dialog" aria-labelledby="convs-title-2">
+  <div class="panel-head"><h3 id="convs-title-2">Conversations</h3><div class="btn-row"><button class="btn" id="jev-new-2" type="button">New</button><button class="btn" id="jev-convs-close" type="button">Close</button></div></div>
+  <ul class="conv-list" id="jev-conv-list-2"></ul>
+</dialog>
 </body>
 </html>

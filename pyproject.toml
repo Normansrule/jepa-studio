@@ -33,17 +33,19 @@ classifiers = [
 video = ["imageio-ffmpeg>=0.5"]
 onnx = ["onnx>=1.16", "onnxscript>=0.3", "onnxruntime>=1.18"]
 assistant = ["llama-cpp-python>=0.2"]
+jev = ["matplotlib>=3.8"]
 dev = ["pytest>=8", "playwright>=1.44", "ruff>=0.5"]
 
 [project.scripts]
 jepa-studio = "jepa_studio.cli:main"
+jev = "jev.cli:main"
 
 [project.urls]
 Homepage = "https://normansrule.github.io/jepa-studio/"
 Source = "https://github.com/Normansrule/jepa-studio"
 
 [tool.setuptools.packages.find]
-include = ["jepa_studio*"]
+include = ["jepa_studio*", "jev*"]
 
 [tool.setuptools.package-data]
 jepa_studio = ["config.schema.json"]

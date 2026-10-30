@@ -1,0 +1,23 @@
+1
+00:00:00,490 --> 00:00:01,552
+What is a JEPA?
+
+2
+00:00:02,492 --> 00:00:05,154
+An encoder embeds two
+views of the same data.
+
+3
+00:00:05,154 --> 00:00:07,869
+A predictor maps one
+embedding onto the other.
+
+4
+00:00:08,809 --> 00:00:12,961
+It predicts embeddings, not
+pixels, so it learns what matters.
+
+5
+00:00:13,901 --> 00:00:17,903
+LeJEPA adds SIGReg, which keeps
+the embeddings from collapsing.

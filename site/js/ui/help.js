@@ -4,7 +4,7 @@
 // the button; clicking elsewhere closes it; only one is open at a time. Text via textContent.
 import { el } from './dom.js';
 
-const REPO = 'https://github.com/Normansrule/jepa-studio/blob/main/docs/';
+const REPO = 'https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/';
 
 // Text written from docs/data.md, docs/equations.md, docs/hardware.md and docs/web-demo.md.
 // Anchors are GitHub's heading slugs for those files.

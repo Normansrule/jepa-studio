@@ -71,7 +71,7 @@ def browser():
 
 # Requests the site may legitimately 404 on: the world-model files are produced by a separate
 # export step and the World tab shows a "model files not found" message without them.
-OPTIONAL_404 = ("/models/world-",)
+OPTIONAL_404 = ("/models/world-", "/js/science/")   # science modules: the Science tab falls back without them
 
 
 class Console:
@@ -82,7 +82,8 @@ class Console:
         page.on("console", self.on_console)
         page.on("pageerror", lambda e: self.errors.append(f"pageerror: {e}"))
         page.on("response", self.on_response)
-        page.on("requestfailed", lambda r: self.errors.append(f"request failed: {r.url} {r.failure}"))
+        page.on("requestfailed", lambda r: None if any(p in r.url for p in OPTIONAL_404)
+                else self.errors.append(f"request failed: {r.url} {r.failure}"))
 
     def on_response(self, resp):
         if resp.status >= 400:
@@ -165,8 +166,11 @@ def test_app_end_to_end(server, browser):
         assert page.get_attribute(f"#tab-{tab}", "aria-selected") == "true"
         assert page.is_visible(f"#panel-{tab}")
     page.focus("#tab-export")
-    page.keyboard.press("Home")
-    assert page.get_attribute("#tab-data", "aria-selected") == "true"
+    page.keyboard.press("Home")                      # JEV and Science come first (v0.4)
+    assert page.get_attribute("#tab-jev", "aria-selected") == "true"
+    page.keyboard.press("End")
+    assert page.get_attribute("#tab-export", "aria-selected") == "true"
+    page.focus("#tab-data")
     page.keyboard.press("ArrowRight")
     assert page.get_attribute("#tab-train", "aria-selected") == "true"
 
@@ -312,7 +316,7 @@ def test_local_images_and_phone_width(server, browser, tmp_path):
     status = page.text_content("#data-status")
     assert "20 images" in status and "notes.png" in status
     assert page.locator("#data-thumbs button").count() == 20
-    for tab in ["data", "train", "inspect", "evaluate", "world", "explain", "export"]:
+    for tab in ["jev", "science", "data", "train", "inspect", "evaluate", "world", "explain", "export"]:
         page.click(f"#tab-{tab}")
         width = page.evaluate("() => document.documentElement.scrollWidth")
         assert width <= 375, f"horizontal scroll on {tab}: {width}px"
@@ -516,7 +520,7 @@ def test_help_disclosure_keyboard(server, browser):
         return [b.getAttribute('aria-expanded'), !!p && p.hidden, p && p.querySelector('a').href]; }))"""))
     for expanded, hidden, href in links:
         assert expanded == "false" and hidden
-        assert href.startswith("https://github.com/Normansrule/jepa-studio/blob/main/docs/") and "#" in href
+        assert href.startswith("https://github.com/Normansrule/jev-jepa-studio/blob/main/docs/") and "#" in href
     btn = ".info-btn[data-help-for='train-lambda']"
     page.focus(btn)
     page.keyboard.press("Enter")

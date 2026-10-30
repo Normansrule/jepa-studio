@@ -1,0 +1,371 @@
+"""Code tools: run Python / Node / shell in the sandbox, install packages into a per-workspace venv,
+scaffold projects, and use JEPA Studio's own models (embed images with a trained run, start training).
+
+run_python and run_node auto-run inside the sandbox unless their code trips a row of the approval
+table (network, shell, installs, deletes, paths outside the workspace; see jev/policy.py); run_shell,
+install_package and jepa_train always ask.
+"""
+from __future__ import annotations
+
+import json
+import re
+import secrets
+import shutil
+import sys
+import threading
+from pathlib import Path
+
+from ..policy import flag, scan_node, scan_python, scan_shell
+from ..sandbox import IS_WIN, Limits, Sandbox, python_for
+from .base import ToolContext, ToolError, ToolResult, tool
+from .core import artifact_kind
+
+PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\[[A-Za-z0-9,._-]{1,100}\])?"
+                    r"((==|>=|<=|~=|!=|>|<)[A-Za-z0-9.*+!_-]{1,40})?(,(==|>=|<=|~=|!=|>|<)[A-Za-z0-9.*+!_-]{1,40}){0,3}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_SANDBOX_LOCK = threading.Lock()
+_FALLBACK: dict = {}
+
+
+def get_sandbox(ctx: ToolContext) -> Sandbox:
+    sb = ctx.settings.get("_sandbox")
+    if sb is None:
+        with _SANDBOX_LOCK:
+            sb = _FALLBACK.get("sb") or Sandbox(ctx.settings)
+            _FALLBACK["sb"] = sb
+    return sb
+
+
+def _limits(ctx: ToolContext, timeout_s: int | None = None) -> Limits:
+    lim = Limits.from_settings(ctx.settings) if ctx.settings.get("limits") else get_sandbox(ctx).limits
+    if timeout_s:
+        lim = Limits(**{**lim.__dict__, "wall_seconds": min(int(timeout_s), lim.wall_seconds)})
+    return lim
+
+
+def _network_ok(ctx: ToolContext) -> bool:
+    approved = set(ctx.settings.get("_approved_rules") or [])
+    return bool(approved & {"network", "install", "send_data"})
+
+
+def _isolated(ctx: ToolContext) -> bool:
+    return get_sandbox(ctx).capabilities().get("network_isolation") == "enforced"
+
+
+def _snippet(ctx: ToolContext, code: str, suffix: str) -> Path:
+    d = ctx.workspace / ".jev" / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"run-{secrets.token_hex(4)}{suffix}"
+    p.write_text(code, encoding="utf-8")
+    return p
+
+
+def _result(ctx: ToolContext, res, label: str) -> ToolResult:
+    arts = []
+    ws = ctx.workspace.resolve()
+    for rel in res.changed_files[:20]:
+        p = (ws / rel)
+        k = artifact_kind(p)
+        if p.is_file() and not p.is_symlink():
+            try:
+                arts.append(ctx.artifact(p, kind=k))
+            except ToolError:
+                pass
+    return ToolResult(ok=res.ok, content=f"{label}: " + res.summary(),
+                      artifacts=arts, data={"returncode": res.returncode, "timed_out": res.timed_out,
+                                            "isolation": res.isolation, "seconds": round(res.seconds, 2)})
+
+
+def _tags(hits) -> str | None:
+    return "\n".join(flag(r, t) for r, t in hits) or None
+
+
+# ------------------------------------------------------------------------------------- run_python
+def _python_needs(args: dict, ctx: ToolContext) -> str | None:
+    return _tags(scan_python(str(args.get("code", "")), _isolated(ctx)))
+
+
+@tool(name="run_python",
+      description="Run a Python 3 program in this conversation's sandboxed workspace (cwd = workspace, no network, "
+                  "time and memory limits). Print results; save figures/files into the workspace and they are shown "
+                  "to the user. numpy, torch, PIL and matplotlib are usually available.",
+      parameters={"type": "object", "properties": {
+          "code": {"type": "string", "maxLength": 200000},
+          "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["code"]},
+      risk="sandbox", category="code", needs_approval=_python_needs)
+def run_python(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
+    script = _snippet(ctx, code, ".py")
+    ws = str(ctx.workspace.resolve())
+    boot = ("import sys, runpy; sys.path.insert(0, sys.argv[1]); sys.argv = [sys.argv[2]]; "
+            "runpy.run_path(sys.argv[0], run_name='__main__')")
+    argv = [python_for(ctx.workspace), "-I", "-c", boot, ws, str(script)]
+    res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
+                               cancelled=ctx.cancelled)
+    return _result(ctx, res, "python")
+
+
+# ------------------------------------------------------------------------------------- run_node
+def _node_needs(args: dict, ctx: ToolContext) -> str | None:
+    return _tags(scan_node(str(args.get("code", "")), _isolated(ctx)))
+
+
+@tool(name="run_node",
+      description="Run a JavaScript program with Node.js in the sandboxed workspace (no network, time and memory "
+                  "limits). Use console.log for results.",
+      parameters={"type": "object", "properties": {
+          "code": {"type": "string", "maxLength": 200000},
+          "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["code"]},
+      risk="sandbox", category="code", needs_approval=_node_needs)
+def run_node(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
+    node = shutil.which("node")
+    if not node:
+        raise ToolError("Node.js is not installed. Install it from https://nodejs.org (LTS) or use run_python.")
+    esm = bool(re.search(r"^\s*(import|export)\s", code, re.M)) and "require(" not in code
+    script = _snippet(ctx, code, ".mjs" if esm else ".cjs")
+    res = get_sandbox(ctx).run([node, str(script)], ctx.workspace, _limits(ctx, timeout_s),
+                               network=_network_ok(ctx), cancelled=ctx.cancelled)
+    return _result(ctx, res, "node")
+
+
+# ------------------------------------------------------------------------------------- run_shell
+def _shell_needs(args: dict, ctx: ToolContext) -> str | None:
+    return _tags(scan_shell(str(args.get("command", "")))) or flag("shell", "runs a shell command")
+
+
+@tool(name="run_shell",
+      description="Run a shell command in the workspace (bash on Linux/macOS, PowerShell on Windows). ALWAYS asks "
+                  "the user first. Prefer run_python for computation.",
+      parameters={"type": "object", "properties": {
+          "command": {"type": "string", "maxLength": 20000},
+          "shell": {"enum": ["auto", "bash", "sh", "powershell", "cmd"]},
+          "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["command"]},
+      risk="approve", category="code", needs_approval=_shell_needs)
+def run_shell(ctx: ToolContext, command: str, shell: str = "auto", timeout_s: int | None = None) -> ToolResult:
+    if shell == "auto":
+        shell = "powershell" if IS_WIN else ("bash" if shutil.which("bash") else "sh")
+    exe = {"bash": "bash", "sh": "sh", "powershell": "powershell" if IS_WIN else "pwsh", "cmd": "cmd"}[shell]
+    path = shutil.which(exe)
+    if not path:
+        raise ToolError(f"{exe} is not available on this computer")
+    if shell == "powershell":
+        argv = [path, "-NoProfile", "-NonInteractive", "-Command", command]
+    elif shell == "cmd":
+        argv = [path, "/d", "/s", "/c", command]
+    else:
+        argv = [path, "-c", command]   # the one place model text reaches a shell, after approval
+    res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
+                               cancelled=ctx.cancelled)
+    return _result(ctx, res, shell)
+
+
+# ------------------------------------------------------------------------------------- install_package
+def _install_needs(args: dict, ctx: ToolContext) -> str | None:
+    pk = ", ".join(str(p) for p in args.get("packages") or [])
+    return flag("install", f"pip install {pk} into this workspace's .venv") + "\n" + \
+        flag("network", "downloads from the Python Package Index (pypi.org)")
+
+
+@tool(name="install_package",
+      description="Install Python packages with pip into this conversation's own virtual environment "
+                  "(workspace/.venv; run_python then uses it). ALWAYS asks the user first.",
+      parameters={"type": "object", "properties": {
+          "packages": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
+          "manager": {"enum": ["pip"]}}, "required": ["packages"]},
+      risk="approve", category="code", needs_approval=_install_needs)
+def install_package(ctx: ToolContext, packages: list, manager: str = "pip") -> ToolResult:
+    bad = [p for p in packages if not PKG_RE.match(p)]
+    if bad:
+        raise ToolError(f"not a plain package name/version: {', '.join(bad)} (options, URLs and paths are refused)")
+    sb = get_sandbox(ctx)
+    base = _limits(ctx)
+    lim = Limits(**{**base.__dict__, "wall_seconds": max(base.wall_seconds, 900),
+                    "cpu_seconds": max(base.cpu_seconds, 600)})
+    venv = ctx.workspace / ".venv"
+    log = []
+    if not venv.exists():
+        res = sb.run([sys.executable, "-I", "-m", "venv", "--system-site-packages", str(venv)], ctx.workspace, lim,
+                     cancelled=ctx.cancelled)
+        if not res.ok:
+            return ToolResult(False, "could not create the workspace venv: " + res.summary())
+        log.append("created .venv (sees this computer's packages, installs go into the workspace)")
+    py = python_for(ctx.workspace)
+    res = sb.run([py, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--", *packages],
+                 ctx.workspace, lim, network=True, cancelled=ctx.cancelled)
+    log.append(res.summary(2500))
+    return ToolResult(res.ok, "\n".join(log), data={"packages": packages})
+
+
+# ------------------------------------------------------------------------------------- create_project
+TEMPLATES = {
+    "python": {"README.md": "# {name}\n\n{description}\n\nRun: `python main.py`\n",
+               "main.py": "\"\"\"{description}\"\"\"\n\n\ndef main():\n    print(\"hello from {name}\")\n\n\n"
+                          "if __name__ == \"__main__\":\n    main()\n",
+               "requirements.txt": "",
+               "tests/test_main.py": "from main import main\n\n\ndef test_main(capsys):\n    main()\n"
+                                     "    assert \"{name}\" in capsys.readouterr().out\n"},
+    "node": {"README.md": "# {name}\n\n{description}\n\nRun: `node index.js`\n",
+             "package.json": "{{\n  \"name\": \"{slug}\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n"
+                             "  \"main\": \"index.js\",\n  \"scripts\": {{\"start\": \"node index.js\"}}\n}}\n",
+             "index.js": "// {description}\nconsole.log('hello from {name}');\n"},
+    "web": {"index.html": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+                          "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+                          "<title>{name}</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n"
+                          "<h1>{name}</h1>\n<p>{description}</p>\n<script src=\"app.js\"></script>\n</body>\n</html>\n",
+            "style.css": "body {{ font-family: system-ui, sans-serif; margin: 2rem; }}\n",
+            "app.js": "// {description}\n"},
+    "empty": {"README.md": "# {name}\n\n{description}\n"},
+}
+
+
+@tool(name="create_project",
+      description="Create a new project folder in the workspace from a template (python, node, web or empty), "
+                  "optionally with extra files you provide.",
+      parameters={"type": "object", "properties": {
+          "name": {"type": "string", "pattern": NAME_RE.pattern},
+          "template": {"enum": sorted(TEMPLATES)},
+          "description": {"type": "string", "maxLength": 500},
+          "files": {"type": "object", "description": "extra files: {relative path: content}"}},
+          "required": ["name"]},
+      risk="sandbox", category="code")
+def create_project(ctx: ToolContext, name: str, template: str = "python", description: str = "",
+                   files: dict | None = None) -> ToolResult:
+    root = ctx.path(name)
+    if root.exists() and any(root.iterdir()):
+        raise ToolError(f"{name}/ already exists and is not empty")
+    slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "project"
+    written = []
+    for rel, body in TEMPLATES[template].items():
+        p = ctx.path(f"{name}/{rel}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.format(name=name, slug=slug, description=description or name), encoding="utf-8")
+        written.append(rel)
+    for rel, body in (files or {}).items():
+        if not isinstance(body, str):
+            raise ToolError(f"files[{rel!r}] must be text")
+        p = ctx.path(f"{name}/{rel}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        written.append(rel)
+    return ToolResult(True, f"Created {name}/ ({template}): " + ", ".join(written),
+                      artifacts=[ctx.artifact(ctx.path(f"{name}/{w}"), "code" if artifact_kind(Path(w)) == "code"
+                                              else "text") for w in written[:10]])
+
+
+# ------------------------------------------------------------------------------------- JEPA tie-ins
+RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _run_dir(ctx: ToolContext, run_id: str) -> Path:
+    if not RUN_ID.match(run_id) or run_id in (".", ".."):
+        raise ToolError("run_id must be a run folder name (see the Runs tab)")
+    root = Path(ctx.settings.get("root") or ".").resolve()
+    d = root / "runs" / run_id
+    if not (d / "config.json").exists():
+        raise ToolError(f"no JEPA Studio run named {run_id!r} under {root / 'runs'}")
+    return d
+
+
+@tool(name="jepa_embed_images",
+      description="Embed the images in a workspace folder with the encoder of a trained JEPA Studio run (read-only use "
+                  "of its hash-verified weights). Saves embeddings.npy and nearest-neighbour pairs to the workspace.",
+      parameters={"type": "object", "properties": {
+          "run_id": {"type": "string", "maxLength": 128},
+          "folder": {"type": "string", "maxLength": 500},
+          "max_images": {"type": "integer", "minimum": 1, "maximum": 2048}}, "required": ["run_id"]},
+      risk="sandbox", category="answer")
+def jepa_embed_images(ctx: ToolContext, run_id: str, folder: str = ".", max_images: int = 256) -> ToolResult:
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    from jepa_studio.config import load_config
+    from jepa_studio.data.loaders import IMAGE_EXT, load_image, safe_listing
+    from jepa_studio.evaluate import embed
+    from jepa_studio.models import build_encoder
+    from jepa_studio.weights import WeightError, load_run_weights
+
+    d = _run_dir(ctx, run_id)
+    cfg = load_config(d / "config.json")
+    if cfg["data"]["kind"] not in ("images", "synthetic-shapes"):
+        raise ToolError(f"run {run_id} was trained on {cfg['data']['kind']}, not images")
+    src = ctx.path(folder)
+    paths = safe_listing(src, IMAGE_EXT, max_images)
+    if not paths:
+        raise ToolError(f"no images (png/jpg/webp/bmp/gif) in {folder!r}")
+    model = build_encoder(cfg)
+    try:
+        verified = load_run_weights(model, d)
+    except WeightError as e:
+        raise ToolError(f"weights of {run_id} failed their hash check: {e}") from e
+    size = cfg["data"]["image_size"]
+    xs, names = [], []
+    for i, p in enumerate(paths):
+        if ctx.cancelled():
+            raise ToolError("cancelled")
+        try:
+            a = load_image(p, max(2 * size, 64))
+        except Exception as e:  # noqa: BLE001
+            ctx.log(f"skipped {p.name}: {e}")
+            continue
+        x = torch.from_numpy(np.ascontiguousarray(a)).permute(2, 0, 1)[None].float()
+        xs.append(F.interpolate(x, size=(size, size), mode="bilinear", align_corners=False, antialias=True)[0])
+        names.append(p.relative_to(ctx.workspace.resolve()).as_posix())
+        ctx.progress((i + 1) / len(paths), p.name)
+    e, _ = embed(model.eval(), torch.stack(xs))
+    e = F.normalize(e, dim=1)
+    out = ctx.path("embeddings.npy")
+    np.save(out, e.numpy())
+    sim = e @ e.T
+    sim.fill_diagonal_(-2)
+    nn = sim.argmax(1).tolist()
+    pairs = [{"image": names[i], "nearest": names[j], "cosine": round(float(sim[i, j]), 4)} for i, j in enumerate(nn)]
+    nn_path = ctx.path("neighbors.json")
+    nn_path.write_text(json.dumps({"run_id": run_id, "weights_verified": verified, "pairs": pairs}, indent=2))
+    lines = [f"{p['image']} ~ {p['nearest']} ({p['cosine']})" for p in pairs[:10]]
+    return ToolResult(True, f"Embedded {len(names)} images with {run_id} ({e.shape[1]}-dim, weights "
+                            f"{'hash-verified' if verified else 'UNVERIFIED (no recorded hash)'}). Nearest pairs:\n" +
+                      "\n".join(lines), artifacts=[ctx.artifact(out, "data"), ctx.artifact(nn_path, "data")])
+
+
+@tool(name="jepa_train",
+      description="Start a LeJEPA pretraining run in JEPA Studio on a folder of workspace images (or the built-in "
+                  "synthetic shapes). Runs in the background; ALWAYS asks the user first.",
+      parameters={"type": "object", "properties": {
+          "name": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$"},
+          "data_folder": {"type": "string", "maxLength": 500},
+          "epochs": {"type": "integer", "minimum": 1, "maximum": 500},
+          "arch": {"enum": ["convnet-tiny", "convnet-small", "vit-tiny"]}}, "required": ["name"]},
+      risk="approve", category="models")
+def jepa_train(ctx: ToolContext, name: str, data_folder: str | None = None, epochs: int = 10,
+               arch: str = "convnet-tiny") -> ToolResult:
+    from jepa_studio.config import load_config
+    from jepa_studio.train import Trainer
+
+    ov: dict = {"name": name, "train": {"epochs": epochs}, "model": {"arch": arch}}
+    if data_folder:
+        ov["data"] = {"kind": "images", "path": str(ctx.path(data_folder))}
+    try:
+        cfg = load_config(overrides=ov)
+    except ValueError as e:
+        raise ToolError(str(e)[:500]) from e
+    root = Path(ctx.settings.get("root") or ".").resolve()
+    rid = f"{name}-{secrets.token_hex(3)}"
+    run_dir = root / "runs" / rid
+    tr = Trainer(cfg, run_dir=run_dir, log=lambda *_: None)
+    studio = ctx.settings.get("_studio")
+    rec = {"run_id": rid, "dir": run_dir, "status": "running", "trainer": tr, "kind": "pretrain", "cfg": cfg}
+
+    def work():
+        try:
+            rec["status"] = tr.fit(resume=False)["status"]
+        except Exception as e:  # noqa: BLE001
+            rec["status"] = "failed"
+            tr.emit("error", message=str(e)[:500])
+    threading.Thread(target=work, daemon=True, name=f"jev-train-{rid}").start()
+    if studio is not None:
+        with studio.lock:
+            studio.runs[rid] = rec
+    return ToolResult(True, f"Started training run {rid} ({arch}, {epochs} epochs, data: "
+                            f"{data_folder or 'synthetic shapes'}). Follow it in the Train tab.",
+                      data={"run_id": rid})
+

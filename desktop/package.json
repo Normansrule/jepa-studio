@@ -1,8 +1,8 @@
 {
-  "name": "jepa-studio-desktop",
+  "name": "jev-studio-desktop",
   "private": true,
-  "version": "0.3.1",
-  "description": "Tauri 2 desktop shell for jepa-studio (the front end is ../site, no build step)",
+  "version": "0.4.0",
+  "description": "Tauri 2 desktop shell for JEV Studio (the front end is ../site, no build step)",
   "license": "MIT",
   "scripts": {
     "tauri": "tauri"

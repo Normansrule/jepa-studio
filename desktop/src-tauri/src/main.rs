@@ -1,18 +1,22 @@
-//! jepa-studio desktop shell.
+//! JEV Studio desktop shell (the local AI agent JEV + the JEPA tools, one backend).
 //!
 //! 1. Shows a small setup window (served from the `jepa-setup:` scheme, not from site/).
 //! 2. Finds or creates the private Python environment (setup.rs).
-//! 3. Starts `python -m jepa_studio serve` on 127.0.0.1 with a per-session token (backend.rs).
+//! 3. Starts `python -m jepa_studio serve` on 127.0.0.1 with a per-session token (backend.rs); the
+//!    same server mounts JEV's /api/jev/* routes.
 //! 4. Opens site/app.html with `window.__JEPA_DESKTOP__ = {port, token}` injected before any page
 //!    script runs, and the page CSP narrowed to that one backend port (csp.rs).
 //! 5. Kills the backend when the main window goes away or the app exits.
 //!
 //! The web view gets exactly two commands: `pick_data_folder` and `backend_status`.
+//! A background thread also checks every few seconds whether a local Ollama answers on loopback
+//! (ollama.rs); the result is part of `backend_status` and shown in the setup window.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
 mod csp;
+mod ollama;
 mod setup;
 
 use std::borrow::Cow;
@@ -53,6 +57,8 @@ struct Status {
     torch_index: Option<String>,
     python: Option<String>,
     log_dir: Option<String>,
+    /// Local Ollama (JEV's model server): reachable on loopback? `None` until the first probe.
+    ollama: Option<ollama::OllamaStatus>,
 }
 
 #[derive(Default)]
@@ -94,11 +100,9 @@ async fn pick_data_folder(window: WebviewWindow, state: State<'_, SharedState>) 
     }
     let allowed = state.allowed_file.lock().unwrap().clone().ok_or("the backend is not running yet")?;
     let (tx, mut rx) = tauri::async_runtime::channel(1);
-    window.dialog().file().set_title("Choose a data folder for jepa-studio").set_parent(&window).pick_folder(
-        move |p| {
-            let _ = tx.try_send(p);
-        },
-    );
+    window.dialog().file().set_title("Choose a data folder for JEV Studio").set_parent(&window).pick_folder(move |p| {
+        let _ = tx.try_send(p);
+    });
     let Some(picked) = rx.recv().await.flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let canon = backend::append_allowed(&allowed, &path)?;
@@ -159,7 +163,7 @@ fn open_setup_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         // resource hook) is registered by the *first* webview, which is this one. So this window
         // carries the same hook as the main window.
         .on_web_resource_request(rewrite_site_csp)
-        .title("jepa-studio setup")
+        .title("JEV Studio setup")
         .inner_size(560.0, 380.0)
         .resizable(false)
         .center()
@@ -178,7 +182,7 @@ static BACKEND_PORT: AtomicU16 = AtomicU16::new(0);
 fn rewrite_site_csp(_req: tauri::http::Request<Vec<u8>>, resp: &mut Response<Cow<'static, [u8]>>) {
     // Only HTML responses carry the CSP header.
     let Some(value) = resp.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()) else { return };
-    let pinned = csp::pin_backend_port(value, BACKEND_PORT.load(Ordering::SeqCst));
+    let pinned = csp::pin_backend_port(&csp::ensure_media_blob(value), BACKEND_PORT.load(Ordering::SeqCst));
     if let Ok(v) = header::HeaderValue::from_str(&pinned) {
         resp.headers_mut().insert("Content-Security-Policy", v);
     }
@@ -210,7 +214,7 @@ fn open_main_window(app: &AppHandle, port: u16, token: &str) -> tauri::Result<We
     }
     #[allow(unused_mut)]
     let mut b = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("app.html".into()))
-        .title("jepa-studio")
+        .title("JEV Studio")
         .inner_size(1320.0, 860.0)
         .min_inner_size(960.0, 640.0)
         .center()
@@ -256,12 +260,16 @@ const SMOKE_PROBE: &str = "setTimeout(async function () {\
     const tier = m.detectTier();\
     const b = m.makeBackend();\
     const health = await b.req('GET', '/api/health');\
+    let jev = null;\
+    try { const st = await b.req('GET', '/api/jev/status'); jev = { version: st.version, ollama: st.ollama && st.ollama.reachable }; } catch (e) { jev = 'unavailable: ' + e.message; }\
     let noToken = null;\
     try { noToken = (await fetch(b.base + '/api/health')).status; } catch (e) { noToken = 'fetch error: ' + e; }\
     const d = window.__JEPA_DESKTOP__;\
     document.title = 'SMOKE-OK ' + JSON.stringify({ tier: tier, health: health, noTokenStatus: noToken,\
       frozen: Object.isFrozen(d), writable: Object.getOwnPropertyDescriptor(window, '__JEPA_DESKTOP__').writable,\
       tauriGlobal: typeof window.__TAURI__, appTitle: document.querySelector('h1, .wordmark') ? 'ok' : 'missing',\
+      pageTitle: document.querySelector('title').textContent, jev: jev,\
+      shell: await window.__TAURI__.core.invoke('backend_status').then(function (s) { return { phase: s.phase, ollama: s.ollama }; }, function (e) { return String(e); }),\
       errors: window.__smokeErrors });\
   } catch (e) {\
     document.title = 'SMOKE-FAIL ' + e + ' ' + JSON.stringify(window.__smokeErrors || []);\
@@ -275,7 +283,7 @@ fn boot(app: &AppHandle) -> Result<(), String> {
     let logs = data_dir.join("logs");
     let log =
         setup::Logger::open(&logs.join("setup.log")).map_err(|e| format!("cannot write {}: {e}", logs.display()))?;
-    log.line(&format!("--- jepa-studio {} starting", env!("CARGO_PKG_VERSION")));
+    log.line(&format!("--- JEV Studio {} starting", env!("CARGO_PKG_VERSION")));
     report(app, |s| {
         s.phase = "setup".into();
         s.message = "Checking the Python environment".into();
@@ -298,7 +306,12 @@ fn boot(app: &AppHandle) -> Result<(), String> {
                 .path()
                 .resolve("python/jepa_studio", BaseDirectory::Resource)
                 .map_err(|e| format!("bundled jepa_studio package not found: {e}"))?;
-            let paths = setup::SetupPaths { data_dir: data_dir.clone(), bundled_pkg };
+            // The local agent ships next to it (bundle.resources "../../jev/" -> python/jev/).
+            let bundled_jev = app.path().resolve("python/jev", BaseDirectory::Resource).ok().filter(|p| p.is_dir());
+            if bundled_jev.is_none() {
+                log.line("warning: bundled jev package not found; JEV routes will be missing");
+            }
+            let paths = setup::SetupPaths { data_dir: data_dir.clone(), bundled_pkg, bundled_jev };
             let app2 = app.clone();
             let progress = move |f: Option<f64>, head: &str, line: &str| {
                 report(&app2, |s| {
@@ -382,7 +395,7 @@ fn watch_backend(app: AppHandle, backend_log: PathBuf) {
         };
         if let Some(code) = exited {
             let msg = format!(
-                "The local backend stopped unexpectedly ({code}). Restart jepa-studio.\n\nLast lines of {}:\n{}",
+                "The local backend stopped unexpectedly ({code}). Restart JEV Studio.\n\nLast lines of {}:\n{}",
                 backend_log.display(),
                 backend::log_tail(&backend_log, 12)
             );
@@ -393,14 +406,32 @@ fn watch_backend(app: AppHandle, backend_log: PathBuf) {
                 s.error = Some(msg.clone());
                 s.port = None;
             });
-            app.dialog().message(msg).title("jepa-studio").kind(MessageDialogKind::Error).show(|_| {});
+            app.dialog().message(msg).title("JEV Studio").kind(MessageDialogKind::Error).show(|_| {});
             return;
         }
     });
 }
 
+/// Probe the local Ollama every 3 s (fast, loopback only) and publish changes through the status,
+/// so the setup window and `backend_status` (the in-app Doctor) can say whether JEV has a model
+/// server. JEPA features do not need Ollama; this only informs.
+fn watch_ollama(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut last: Option<ollama::OllamaStatus> = None;
+        loop {
+            let now = ollama::probe_default();
+            if last.as_ref() != Some(&now) {
+                let snapshot = now.clone();
+                report(&app, |s| s.ollama = Some(snapshot));
+                last = Some(now);
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    });
+}
+
 fn fail(app: &AppHandle, err: String) {
-    eprintln!("jepa-studio: {err}");
+    eprintln!("jev-studio: {err}");
     report(app, |s| {
         s.phase = "error".into();
         s.message = "Setup failed".into();
@@ -410,7 +441,7 @@ fn fail(app: &AppHandle, err: String) {
         let _ = w.show();
         let _ = w.set_focus();
     } else {
-        app.dialog().message(err).title("jepa-studio").kind(MessageDialogKind::Error).show(|_| {});
+        app.dialog().message(err).title("JEV Studio").kind(MessageDialogKind::Error).show(|_| {});
     }
 }
 
@@ -424,8 +455,9 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             if let Err(e) = open_setup_window(&handle) {
-                eprintln!("jepa-studio: could not open the setup window: {e}");
+                eprintln!("jev-studio: could not open the setup window: {e}");
             }
+            watch_ollama(handle.clone());
             std::thread::spawn(move || {
                 if let Err(e) = boot(&handle) {
                     kill_backend(&handle);
@@ -435,10 +467,10 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building the jepa-studio shell");
+        .expect("error while building the JEV Studio shell");
 
     if let Ok(d) = app.path().app_local_data_dir() {
-        eprintln!("jepa-studio: data folder {}", d.display());
+        eprintln!("jev-studio: data folder {}", d.display());
     }
 
     app.run(|handle, event| match event {

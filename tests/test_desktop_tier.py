@@ -104,7 +104,7 @@ def _page(browser, backend, picked: Path):
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "Failed to load resource" not in m.text
             else None)
     page.route("**/*", _serve_site)
-    page.goto(f"http://127.0.0.1:{backend['port']}/app.html")
+    page.goto(f"http://127.0.0.1:{backend['port']}/app.html#data")      # the desktop tier opens on JEV otherwise
     t0 = time.time()
     while page.get_attribute("html", "data-ready") != "true":
         assert time.time() - t0 < 30, "app did not become ready"

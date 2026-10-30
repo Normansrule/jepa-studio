@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "site" / "docs-index.json"
-REPO_URL = "https://github.com/Normansrule/jepa-studio/blob/main/"
+REPO_URL = "https://github.com/Normansrule/jev-jepa-studio/blob/main/"
 MAX_CHARS = 1200
 
 

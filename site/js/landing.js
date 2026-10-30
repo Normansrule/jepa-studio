@@ -1,4 +1,4 @@
-// Landing page: theme toggle, the hero figure (a real Epps-Pulley statistic on samples that
+// Landing page (JEV Studio): theme toggle, the JEPA figure (a real Epps-Pulley statistic on samples that
 // morph from a collapsed cluster to N(0, 1)), and the web vs desktop capability table.
 import { epConstants, epStat, epExpectedUnderNull } from './engine/lejepa.js';
 import { gaussian, mulberry32 } from './engine/rng.js';
@@ -103,6 +103,8 @@ function play() {
 
 // ------------------------------------------------------------------ capability table
 const CAPS = [
+  ['JEV: chat, code, images, video', ['no', 'needs Ollama and the local backend'], ['yes', 'with models from your own Ollama; sandbox + approvals']],
+  ['Science: black hole and physics simulations', ['yes', 'live, on your graphics card (WebGL)'], ['yes', 'plus high-quality video renders on this computer']],
   ['Pretrain on built-in Shapes', ['yes', 'mlp-tiny, 16×16 inputs, a few minutes'], ['yes', 'ConvNet / ResNet / ViT, full resolution']],
   ['Pretrain on your images', ['part', 'up to 2000 files, resized to 32×32'], ['yes', 'folders of any size, streamed from disk']],
   ['Time series and video', ['part', 'CSV preview and views only'], ['yes', 'series-conv and video-convnet encoders']],
@@ -112,7 +114,7 @@ const CAPS = [
   ['World-model planning', ['yes', 'pre-trained models, CEM in the browser'], ['yes', 'train your own world models']],
   ['Explain panel', ['part', 'keyword search over the docs'], ['yes', 'local assistant over docs and logs']],
   ['Export: safetensors, .npy, report, bundle', ['yes', ''], ['yes', 'plus checkpoints and resume']],
-  ['Your data leaves the device', ['no', 'never'], ['no', 'never; binds to 127.0.0.1 only']],
+  ['Your data leaves the device', ['no', 'never'], ['no', 'only when you approve a tool that uses the network; the backend binds to 127.0.0.1']],
 ];
 const ICON = { yes: 'M4 12l5 5L20 6', part: 'M5 12h14', no: 'M6 6l12 12M18 6L6 18' };
 const WORD = { yes: 'Yes', part: 'Partly', no: 'No' };

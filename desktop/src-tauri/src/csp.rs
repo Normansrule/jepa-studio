@@ -42,6 +42,23 @@ pub fn pin_backend_port(csp: &str, port: u16) -> String {
     }
 }
 
+/// JEV's artifacts (videos, audio) are fetched with the session token and played from `blob:`
+/// URLs. Make sure the policy allows that: add `blob:` to an existing `media-src`, or add
+/// `media-src 'self' blob:` when the policy has none (so a stale config cannot silently break
+/// playback, and nothing wider than `blob:` is ever added).
+pub fn ensure_media_blob(csp: &str) -> String {
+    let mut parts: Vec<String> = csp.split(';').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+    match parts.iter_mut().find(|p| p.split_whitespace().next() == Some("media-src")) {
+        Some(p) => {
+            if !p.split_whitespace().any(|t| t == "blob:") {
+                p.push_str(" blob:");
+            }
+        }
+        None => parts.push("media-src 'self' blob:".into()),
+    }
+    parts.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +91,31 @@ mod tests {
         assert_eq!(strip_meta_csp("<html><head><meta charset=utf-8></head></html>"), None);
         assert_eq!(strip_meta_csp("no tags at all"), None);
         assert_eq!(strip_meta_csp("<meta unterminated"), None);
+    }
+
+    #[test]
+    fn media_blob_is_allowed_and_nothing_else_widens() {
+        let base = "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:*";
+        let out = ensure_media_blob(base);
+        assert_eq!(out, "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:*; media-src 'self' blob:");
+        assert_eq!(ensure_media_blob("media-src 'self'"), "media-src 'self' blob:");
+        assert_eq!(ensure_media_blob("media-src 'self' blob:;"), "media-src 'self' blob:");
+        // pinning still works afterwards, and the media rule survives it
+        let pinned = pin_backend_port(&out, 40001);
+        assert!(pinned.contains("connect-src 'self' http://127.0.0.1:40001"));
+        assert!(pinned.contains("media-src 'self' blob:"));
+        assert!(!pinned.contains("127.0.0.1:*"));
+    }
+
+    #[test]
+    fn the_shipped_policy_allows_blob_media_and_pins() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        assert!(csp.contains("media-src 'self' blob:"), "{csp}");
+        assert_eq!(ensure_media_blob(csp), csp.trim_end_matches(';').to_string());
+        let pinned = pin_backend_port(csp, 51000);
+        assert!(pinned.contains("http://127.0.0.1:51000") && !pinned.contains("127.0.0.1:*"));
+        assert!(!csp.contains("unsafe-inline") && !csp.contains("unsafe-eval"));
     }
 
     #[test]
