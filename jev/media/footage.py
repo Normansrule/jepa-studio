@@ -34,7 +34,9 @@ import numpy as np
 from PIL import Image
 
 from . import ffmpeg as F
-from .common import Limits, MediaError, even, inside, open_image_safely
+from jev import wsfs
+
+from .common import Limits, MediaError, even, inside, open_image_safely, out_inside
 
 ANALYSIS_WIDTH = 160
 CACHE_VERSION = 2
@@ -121,7 +123,7 @@ class JEPAFeaturizer:
         cfg_path = d / "config.json"
         if not cfg_path.is_file():
             raise MediaError(f"{d.name}: not a jepa_studio run (no config.json)")
-        cfg = json.loads(cfg_path.read_text())
+        cfg = json.loads(wsfs.read_text(d, "config.json"))
         arch = cfg.get("model", {}).get("arch")
         if arch == "series-conv":
             raise MediaError(f"{d.name} is a time-series encoder; footage needs an image or video encoder")
@@ -198,13 +200,13 @@ def analyze(path: str | Path, workspace: str | Path, *, encoder_run: str | Path 
     method = f"jepa:{featurizer.name}" if featurizer else "histogram"
     cache_file = None
     if cache:
-        cdir = ws / ".jev_media_cache"
-        cdir.mkdir(exist_ok=True)
+        cdir = wsfs.cache_dir("media-cache")           # backend-owned, never inside the workspace
         cache_file = cdir / (_cache_key(p, method + (str(Path(encoder_run).resolve()) if encoder_run else ""),
                                         sample_fps, w) + ".npz")
-        if cache_file.is_file():
+        if wsfs.is_regular(cdir, cache_file):
             try:
-                z = np.load(cache_file, allow_pickle=False)
+                with wsfs.open_file(cdir, cache_file, "rb") as fh:
+                    z = dict(np.load(fh, allow_pickle=False))
                 a = Analysis(p, info, z["times"], z["features"], z["motion"], method, sample_fps, (w, h))
                 a.shots, a.distances = detect_shots(a, sensitivity=sensitivity, min_shot_s=min_shot_s)
                 return a
@@ -226,7 +228,8 @@ def analyze(path: str | Path, workspace: str | Path, *, encoder_run: str | Path 
         progress(0.9, "features")
     motion = motion_energy(arr)
     if cache_file is not None:
-        np.savez(cache_file, times=times, features=feats, motion=motion)
+        with wsfs.atomic_writer(cache_file.parent, cache_file) as fh:
+            np.savez(fh, times=times, features=feats, motion=motion)
     a = Analysis(p, info, times, feats, motion, method, sample_fps, (w, h))
     a.shots, a.distances = detect_shots(a, sensitivity=sensitivity, min_shot_s=min_shot_s)
     if progress:
@@ -302,7 +305,7 @@ def search(a: Analysis, query: np.ndarray, top_k: int = 5) -> list[dict]:
 
 def query_from_image(a: Analysis, path: str | Path, workspace: str | Path, encoder_run=None,
                      limits: Limits | None = None) -> np.ndarray:
-    im = open_image_safely(inside(path, workspace), limits)
+    im = open_image_safely(inside(path, workspace), limits, root=Path(workspace).resolve())
     fz = JEPAFeaturizer(encoder_run) if encoder_run else None
     return featurize_image(im, a, fz)
 
@@ -413,14 +416,15 @@ def _tc(t: float, fps: int) -> str:
 
 
 def export_cut_list(cuts: list[Cut], source: Path, json_out: Path, edl_out: Path | None, fps: float,
-                    title: str = "JEV cut list") -> dict:
+                    title: str = "JEV cut list", root: Path | None = None) -> dict:
+    root = Path(root) if root is not None else Path(json_out).parent
     rec = 0.0
     items = []
     for c in cuts:
         items.append({**c.to_json(), "record_start": round(rec, 3), "record_end": round(rec + c.duration, 3)})
         rec += c.duration
     doc = {"format": "jev-cutlist/v1", "source": source.name, "fps": fps, "duration_s": round(rec, 3), "cuts": items}
-    json_out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    wsfs.write_text(root, json_out, json.dumps(doc, indent=2))
     if edl_out is not None:
         ifps = max(1, int(round(fps)))
         lines = [f"TITLE: {title[:60]}", "FCM: NON-DROP FRAME", ""]
@@ -433,7 +437,7 @@ def export_cut_list(cuts: list[Cut], source: Path, json_out: Path, edl_out: Path
                 lines.append(f"* COMMENT: {c.label}")
             lines.append("")
             rec += c.duration
-        edl_out.write_text("\n".join(lines), encoding="utf-8")
+        wsfs.write_text(root, edl_out, "\n".join(lines))
     return doc
 
 
@@ -448,17 +452,25 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
                 cancelled: Callable[[], bool] | None = None) -> dict:
     """Trim `cuts` from `src` and join them into `out` (MP4). mode: auto | copy | reencode.
     Stream copy is lossless and fast but only exact when every cut starts on a keyframe and
-    nothing is drawn on top; auto falls back to re-encoding (frame-accurate) otherwise."""
+    nothing is drawn on top; auto falls back to re-encoding (frame-accurate) otherwise. The parts
+    are made in backend-owned scratch, never in the workspace."""
+    with wsfs.ensure_scratch():
+        return _render_cuts(src, cuts, out, workspace, mode=mode, title=title, captions=captions, limits=limits,
+                            crf=crf, theme_name=theme_name, progress=progress, cancelled=cancelled)
+
+
+def _render_cuts(src, cuts, out, workspace, *, mode, title, captions, limits, crf, theme_name, progress,
+                 cancelled) -> dict:
     from .images import title_card
     from .video import Cue, caption_image, write_srt
 
     ws = Path(workspace).resolve()
     limits = limits or Limits()
     sp = inside(src, ws)
-    o = inside(out, ws)
+    o = out_inside(out, ws)
     if o.suffix.lower() != ".mp4":
         o = o.with_suffix(".mp4")
-    o.parent.mkdir(parents=True, exist_ok=True)
+    wsfs.makedirs(ws, o.parent)
     if mode not in ("auto", "copy", "reencode"):
         raise MediaError("mode must be auto, copy or reencode")
     if not cuts:
@@ -492,8 +504,7 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
         else:
             used = "reencode"
             notes.append("re-encoded: " + ("title/captions drawn" if drawn else "cuts not on keyframes"))
-    work = o.parent / f".{o.stem}.work"
-    work.mkdir(parents=True, exist_ok=True)
+    work = wsfs.new_scratch("cut-")
     prog = progress or (lambda f, m: None)
     parts = []
     W, H = even(info.width), even(info.height)
@@ -501,7 +512,7 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
     has_audio = info.has_audio
     if title and used == "reencode":
         png = work / "title.png"
-        title_card(title, "", (W, H), theme_name).save(png)
+        wsfs.save_image(title_card(title, "", (W, H), theme_name), work, png)
         part = work / "part_title.mp4"
         args = ["-loop", "1", "-framerate", f"{fps:g}", "-i", str(png)]
         if has_audio:
@@ -527,7 +538,7 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
             vf = f"scale={W}:{H},setsar=1,fps={fps:g},format=yuv420p"
             if captions and c.label:
                 cap = work / f"cap_{i:03d}.png"
-                caption_image(c.label, (W, H), theme_name).save(cap)
+                wsfs.save_image(caption_image(c.label, (W, H), theme_name), work, cap)
                 args += ["-i", str(cap), "-filter_complex",
                          f"[0:v]{vf}[b];[b][1:v]overlay=x=(W-w)/2:y=H-h-{int(H * 0.05)},format=yuv420p[v]",
                          "-map", "[v]"] + (["-map", "0:a:0"] if has_audio else [])
@@ -542,7 +553,7 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
         parts.append(part)
         prog(0.9 * (i + 1) / len(cuts), f"cut {i + 1}/{len(cuts)}")
     lst = work / "list.txt"
-    lst.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
+    wsfs.write_text(work, lst, "".join(f"file '{p.name}'\n" for p in parts))
     F.run(["-f", "concat", "-safe", "1", "-i", lst.name, "-c", "copy", "-movflags", "+faststart", str(o)],
           ws, outputs=[o], cwd=work, timeout=limits.ffmpeg_timeout_s, cancelled=cancelled, label="concat")
     title_s = 2.5 if (title and used == "reencode") else 0.0
@@ -554,12 +565,10 @@ def render_cuts(src: str | Path, cuts: list[Cut], out: str | Path, workspace: st
         rec += c.duration
     srt = None
     if cues:
-        srt = write_srt(cues, o.with_suffix(".srt"))
+        srt = write_srt(cues, o.with_suffix(".srt"), root=ws)
     doc = export_cut_list(cuts, sp, o.with_suffix(".cuts.json"), o.with_suffix(".edl"), fps,
-                          title=f"JEV {o.stem}")
-    for p in work.iterdir():
-        p.unlink(missing_ok=True)
-    work.rmdir()
+                          title=f"JEV {o.stem}", root=ws)
+    wsfs.drop_scratch(work)
     out_info = F.probe(o, ws, limits, kind="footage", check=False)
     prog(1.0, "done")
     return {"video": o, "mode": used, "duration_s": out_info.duration_s, "expected_s": title_s + total,

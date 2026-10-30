@@ -101,9 +101,11 @@ appears and the JEV tab shows the count. The dialog shows:
   happen;
 * the exact command, path, address or model in a monospace block, so you approve what will
   actually run; all arguments, never cut, are one click away ("All arguments", scrollable), with
-  the SHA-256 of those exact arguments. Approving sends that hash back
-  (`POST /approvals/<id> {decision, remember, args_sha256}`) and the backend refuses an approval
-  whose hash does not match the pending call;
+  the SHA-256 of those exact arguments, computed in the page over the canonical JSON the backend
+  sent (after checking it is exactly what the card shows). Invisible and text-direction characters
+  (U+202E, zero-width spaces, control characters) are shown as visible `\uXXXX` escapes, with a
+  warning. Approving sends the page's own hash (`POST /approvals/<id> {decision, remember,
+  args_sha256}`) and the backend refuses an approval whose hash does not match the pending call;
 * why it asks (the backend's `reason`) and the tool with its risk badge;
 * **Deny**, **Approve for this session**, **Approve once**. "For this session" covers only these
   exact arguments of this tool in this conversation; shell commands, installs, network use,

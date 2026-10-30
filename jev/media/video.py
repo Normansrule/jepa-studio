@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import shutil
 import time
 import wave
 from dataclasses import dataclass, field
@@ -32,7 +31,9 @@ from PIL import Image, ImageDraw
 
 from . import ffmpeg as F
 from . import tts
-from .common import Limits, MediaError, even, font, font_file, inside, open_image_safely
+from jev import wsfs
+
+from .common import Limits, MediaError, even, font, font_file, inside, open_image_safely, out_inside
 from .images import fit_image, line_height, rgb, theme, wrap
 from .slides import render_slide
 
@@ -121,11 +122,11 @@ def make_cues(text: str, start: float, seconds: float) -> list[Cue]:
     return [Cue(float(edges[i]), float(edges[i + 1]), chunks[i]) for i in range(len(chunks))]
 
 
-def write_srt(cues: list[Cue], path: Path) -> Path:
+def write_srt(cues: list[Cue], path: Path, root: Path | None = None) -> Path:
     blocks = []
     for i, c in enumerate(cues, 1):
         blocks.append(f"{i}\n{_fmt_srt(c.start)} --> {_fmt_srt(c.end)}\n" + "\n".join(caption_lines(c.text)) + "\n")
-    path.write_text("\n".join(blocks), encoding="utf-8")
+    wsfs.write_text(root if root is not None else Path(path).parent, path, "\n".join(blocks))
     return path
 
 
@@ -210,7 +211,9 @@ def _still_segment(png: Path, seg: Path, ws: Path, size, fps, dur, *, kb: bool, 
                    limits: Limits, cancelled) -> None:
     n = max(1, int(round(dur * fps)))
     if kb:
-        im = Image.open(png)
+        with wsfs.open_file(wsfs.root_of(png, ws), png, "rb") as fh:
+            im = Image.open(fh)
+            im.load()
         F.encode_frames(_kb_frames(im, size, n, kb_zoom, seed), seg, ws, size=size, fps=fps, total_frames=n,
                         crf=14, preset="veryfast", cancelled=cancelled, timeout=limits.ffmpeg_timeout_s,
                         label="ken burns")
@@ -250,13 +253,13 @@ def _to_pcm(src: Path, dst: Path, ws: Path, limits: Limits, seconds: float | Non
         args += ["-t", f"{seconds:.3f}"]
     F.run(args + ["-c:a", "pcm_s16le", str(dst)], ws, outputs=[dst], timeout=limits.ffmpeg_timeout_s,
           label="audio convert")
-    with wave.open(str(dst), "rb") as w:
+    with wsfs.open_file(wsfs.root_of(dst, ws), dst, "rb") as fh, wave.open(fh, "rb") as w:
         return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768.0
 
 
 def _write_wav(path: Path, x: np.ndarray) -> None:
     pcm = (np.clip(x, -1, 1) * 32767).astype(np.int16)
-    with wave.open(str(path), "wb") as w:
+    with wsfs.atomic_writer(wsfs.root_of(path), path) as fh, wave.open(fh, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(AUDIO_RATE)
@@ -318,14 +321,26 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
                    progress: Callable[[float, str], None] | None = None,
                    cancelled: Callable[[], bool] | None = None) -> dict:
     """Build an explainer MP4 from scenes. Returns paths, timing, the speech backends used and
-    the caption method. See the module docstring for the scene format."""
+    the caption method. See the module docstring for the scene format. Intermediate files are made
+    in backend-owned scratch, never in the workspace."""
+    with wsfs.ensure_scratch():
+        return _make_explainer(scenes, out, workspace, size=size, fps=fps, theme_name=theme_name,
+                               tts_backend=tts_backend, voice=voice, rate=rate, ken_burns=ken_burns,
+                               ken_burns_zoom=ken_burns_zoom, crossfade=crossfade, captions=captions, music=music,
+                               music_volume=music_volume, crf=crf, preset=preset, seed=seed, settings=settings,
+                               limits=limits, keep_work=keep_work, progress=progress, cancelled=cancelled)
+
+
+def _make_explainer(scenes, out, workspace, *, size, fps, theme_name, tts_backend, voice, rate, ken_burns,
+                    ken_burns_zoom, crossfade, captions, music, music_volume, crf, preset, seed, settings, limits,
+                    keep_work, progress, cancelled) -> dict:
     t_start = time.monotonic()
     ws = Path(workspace).resolve()
     limits = limits or Limits.from_settings(settings)
-    out_mp4 = inside(out, ws)
+    out_mp4 = out_inside(out, ws)
     if out_mp4.suffix.lower() != ".mp4":
         out_mp4 = out_mp4.with_suffix(".mp4")
-    out_mp4.parent.mkdir(parents=True, exist_ok=True)
+    wsfs.makedirs(ws, out_mp4.parent)
     if not scenes:
         raise MediaError("an explainer needs at least one scene")
     if len(scenes) > MAX_SCENES:
@@ -341,10 +356,7 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
     th = theme(theme_name)
     prog = progress or (lambda f, m: None)
     is_cancelled = cancelled or (lambda: False)
-    work = out_mp4.parent / f".{out_mp4.stem}.work"
-    if work.exists():
-        shutil.rmtree(work)
-    work.mkdir(parents=True)
+    work = wsfs.new_scratch("explainer-")
     n = len(scenes)
     visuals = [_normalize_visual(s.get("visual")) for s in scenes]
     for v in visuals:
@@ -358,7 +370,7 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
             raise MediaError("cancelled")
         narr = str(s.get("narration", "") or "").strip()
         if narr:
-            r = tts.synthesize(narr, work / f"voice_{i:02d}.wav", ws, backend=tts_backend, voice=voice, rate=rate,
+            r = tts.synthesize(narr, work / f"voice_{i:02d}.wav", work, backend=tts_backend, voice=voice, rate=rate,
                                settings=settings)
         else:
             r = None
@@ -398,14 +410,14 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
             spec = dict(v["slide"])
             if captions == "burn" and spec.get("type") != "title":
                 spec.setdefault("safe_bottom", 0.1)        # keep slide content clear of the captions
-            render_slide(spec, size, th, ws, limits).save(png)
+            wsfs.save_image(render_slide(spec, size, th, ws, limits), work, png)
             kb = ken_burns is True
             _still_segment(png, seg, ws, size, fps, durs[i], kb=kb, kb_zoom=ken_burns_zoom * 0.5, seed=seed + i,
                            limits=limits, cancelled=is_cancelled)
         elif v["kind"] == "image":
-            src = open_image_safely(inside(v["path"], ws), limits)
+            src = open_image_safely(inside(v["path"], ws), limits, root=ws)
             png = work / f"still_{i:02d}.png"
-            fit_image(src, size, v.get("fit", "fit"), th.bg).save(png)
+            wsfs.save_image(fit_image(src, size, v.get("fit", "fit"), th.bg), work, png)
             kb = ken_burns is True or ken_burns == "auto"
             _still_segment(png, seg, ws, size, fps, durs[i], kb=kb, kb_zoom=ken_burns_zoom, seed=seed + i,
                            limits=limits, cancelled=is_cancelled)
@@ -450,8 +462,8 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
     # 5. captions
     cues = [cu for r in results for cu in r.cues]
     srt = out_mp4.with_suffix(".srt")
-    write_srt(cues, srt)
-    shutil.copy(srt, work / "captions.srt")
+    write_srt(cues, srt, root=ws)
+    write_srt(cues, work / "captions.srt", root=work)
     caption_mode = "none"
     if captions == "burn" and cues:
         caption_mode = "libass" if F.has_filter("subtitles") else "pillow"
@@ -479,7 +491,7 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
     elif caption_mode == "pillow":
         for k, cu in enumerate(cues):
             png = work / f"cap_{k:03d}.png"
-            caption_image(cu.text, size, th).save(png)
+            wsfs.save_image(caption_image(cu.text, size, th), work, png)
             args += ["-i", png.name]
             idx = audio_idx + 1 + k
             margin = int(H * 0.05)
@@ -507,9 +519,9 @@ def make_explainer(scenes: list[dict], out: str | Path, workspace: str | Path, *
                                  for cu in r.cues]} for r in results],
     }
     sb = out_mp4.with_suffix(".storyboard.json")
-    sb.write_text(json.dumps(storyboard, indent=2, default=str), encoding="utf-8")
+    wsfs.write_text(ws, sb, json.dumps(storyboard, indent=2, default=str))
     if not keep_work:
-        shutil.rmtree(work, ignore_errors=True)
+        wsfs.drop_scratch(work)
     prog(1.0, "done")
     return {"video": out_mp4, "srt": srt, "storyboard": sb, "duration_s": total, "caption_mode": caption_mode,
             "tts_backends": backends, "silent_narration": silent, "size": size, "fps": fps,

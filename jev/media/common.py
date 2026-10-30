@@ -30,12 +30,24 @@ def inside(path: str | Path, workspace: str | Path) -> Path:
     return p
 
 
+def out_inside(path: str | Path, workspace: str | Path) -> Path:
+    """An output path: its folder must resolve inside the workspace; the final name is not resolved,
+    because a link already there is replaced by the write (jev/wsfs.py), never followed."""
+    ws = Path(workspace).resolve()
+    p = Path(path)
+    p = p if p.is_absolute() else ws / p
+    if not p.name or p.name in (".", ".."):
+        raise MediaError(f"{path} is not a file name")
+    return inside(p.parent, ws) / p.name
+
+
 def out_path(workspace: str | Path, relative: str | Path, suffix: str) -> Path:
     """An output path inside the workspace with the given suffix; parent folders are created."""
+    from jev import wsfs
     p = inside(relative, workspace)
     if p.suffix.lower() != suffix:
         p = p.with_suffix(suffix)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    wsfs.makedirs(Path(workspace).resolve(), p.parent)
     return p
 
 
@@ -154,14 +166,20 @@ def font(role: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         return ImageFont.load_default()
 
 
-def open_image_safely(path: Path, limits: Limits | None = None) -> Image.Image:
+def open_image_safely(path: Path, limits: Limits | None = None, root: Path | None = None) -> Image.Image:
     """Open a still with the same caps as the training loaders (file size, pixel count)."""
-    from jev.tools.base import NotRegularFile, open_regular
+    from jev import wsfs
+    from jev.tools.base import NotRegularFile
 
     limits = limits or Limits()
+    if root is None:
+        try:
+            root = wsfs.root_of(path)
+        except wsfs.UnsafePath:
+            root = Path(path).parent
     try:
-        fh = open_regular(path, "rb")          # never blocks on a FIFO, never follows a final symlink
-    except NotRegularFile as e:
+        fh = wsfs.open_file(root, path, "rb")   # no link followed, never blocks on a FIFO
+    except (NotRegularFile, wsfs.UnsafePath) as e:
         raise MediaError(str(e)) from e
     except OSError as e:
         raise MediaError(f"{Path(path).name}: cannot open ({e.strerror})") from e

@@ -732,7 +732,7 @@ def summary_chart(kind, res, path) -> bool:
             ax.set_title(f"Final field (CFL {res['metrics']['cfl_number']:.2f})")
             ax.grid(False)
         fig.tight_layout()
-        fig.savefig(path)
+        fig.savefig(path)  # wsfs-ok: out_dir is backend scratch or _science
     return True
 
 
@@ -795,7 +795,7 @@ def _run(kind, params, out_dir, progress, cancelled):
         raise ValueError(f"unknown simulation {kind!r}; choose one of {', '.join(KINDS)}")
     p = _common(params)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)  # wsfs-ok: out_dir is backend scratch or _science
     nframes = max(2, int(round(p["seconds"] * p["fps"])))
     t0 = time.perf_counter()
     progress(0.02, f"simulating {kind}")
@@ -823,7 +823,7 @@ def _run(kind, params, out_dir, progress, cancelled):
                     raise Cancelled("simulation cancelled")
     except Cancelled:
         writer.close()
-        vid.unlink(missing_ok=True)
+        vid.unlink(missing_ok=True)  # wsfs-ok: out_dir is backend scratch or _science
         raise
     writer.close()
     chart = out_dir / f"{stem}_summary.png"
@@ -831,6 +831,6 @@ def _run(kind, params, out_dir, progress, cancelled):
     metrics = {"kind": kind, "params": dict(p), **res["metrics"], "summary_chart": has_chart,
                "timings": {"simulate_s": t_sim, "total_s": time.perf_counter() - t0}, "frames": nframes}
     mpath = out_dir / f"{stem}_metrics.json"
-    mpath.write_text(json.dumps(metrics, indent=2, default=float))
+    mpath.write_text(json.dumps(metrics, indent=2, default=float))  # wsfs-ok: out_dir is backend scratch or _science
     progress(1.0, "done")
     return [vid, chart, mpath] if has_chart else [vid, mpath]

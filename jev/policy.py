@@ -260,12 +260,18 @@ def scan_shell(command: str) -> list[tuple[str, str]]:
 
 
 # ------------------------------------------------------------------------------------------ policy
-def args_hash(args) -> str:
-    """SHA-256 of the canonical JSON of a call's arguments (sorted keys, no whitespace, UTF-8). The
-    approval card shows it, the decision must echo it, and "remember" keys on it."""
-    blob = json.dumps(args if args is not None else {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+def canonical_args(args) -> str:
+    """The canonical JSON of a call's arguments: sorted keys, no whitespace, ASCII only (every other
+    character as a \\u escape), so the app can hash exactly the same bytes."""
+    return json.dumps(args if args is not None else {}, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                       default=str)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def args_hash(args) -> str:
+    """SHA-256 of canonical_args(args). The approval card shows it; the app computes it itself from
+    the canonical text it received (after checking that text parses to the arguments it displays)
+    and sends it with the decision; "remember" keys on it."""
+    return hashlib.sha256(canonical_args(args).encode("ascii")).hexdigest()
 
 
 def _sandbox_caps(ctx) -> dict:

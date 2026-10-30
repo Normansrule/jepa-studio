@@ -34,8 +34,10 @@ from PIL import Image
 
 from jepa_studio.weights import REFUSED_SUFFIXES
 
+from jev import wsfs
+
 from . import ffmpeg as F
-from .common import MediaError, even, inside
+from .common import MediaError, even, out_inside
 from .images import save_png
 
 MANIFEST = "jev-model.json"
@@ -182,7 +184,7 @@ def resolve_model(model: str, settings: dict | None = None) -> tuple[Path, Model
 
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()
-    with open(p, "rb") as f:
+    with open(p, "rb") as f:  # wsfs-ok: the models folder
         while b := f.read(1 << 22):
             h.update(b)
     return h.hexdigest()
@@ -205,7 +207,7 @@ def inspect_model_dir(path: Path, kind: str | None = None, verify: bool = False)
     if not idx.is_file() or idx.stat().st_size > 1 << 20:
         raise MediaError(f"{path.name}: no model_index.json (not a diffusers model folder)")
     try:
-        index = json.loads(idx.read_text())
+        index = json.loads(idx.read_text())  # wsfs-ok: the models folder
     except json.JSONDecodeError as e:
         raise MediaError(f"{path.name}/model_index.json is not valid JSON") from e
     cls = index.get("_class_name")
@@ -229,7 +231,7 @@ def inspect_model_dir(path: Path, kind: str | None = None, verify: bool = False)
     verified = False
     man = path / MANIFEST
     if verify and man.is_file():
-        rec = json.loads(man.read_text()).get("files", {})
+        rec = json.loads(man.read_text()).get("files", {})  # wsfs-ok: the models folder
         for rel, meta in rec.items():
             p = (path / rel).resolve()
             if path.resolve() not in p.parents or not p.is_file():
@@ -333,7 +335,7 @@ def generate_image(model: str, prompt: str, out: str | Path, workspace: str | Pa
                    gpu: dict | None = None, allow_cpu: bool = True, verify: bool = True,
                    progress=None, cancelled=None) -> dict:
     ws = Path(workspace).resolve()
-    o = inside(out, ws).with_suffix(".png")
+    o = out_inside(out, ws).with_suffix(".png")
     if not prompt or len(prompt) > 2000:
         raise MediaError("prompt must be 1..2000 characters")
     path, spec, info, plan = _prepare(model, "image", settings, gpu, allow_cpu, verify)
@@ -359,8 +361,8 @@ def generate_image(model: str, prompt: str, out: str | Path, workspace: str | Pa
             "seed": seed, "steps": steps, "guidance": g, "width": w, "height": h, "device": plan["device"],
             "dtype": plan["dtype"], "offload": plan["offload"], "license": spec.license,
             "seconds": round(time.monotonic() - t0, 2), "generator": "jev.media.generative"}
-    save_png(im, o, {"jev": json.dumps(meta)})
-    o.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+    save_png(im, o, {"jev": json.dumps(meta)}, root=ws)
+    wsfs.write_text(ws, o.with_suffix(".json"), json.dumps(meta, indent=2))
     return {"image": o, "meta": meta, "plan": plan, "ignored_pickles": info["ignored_pickles"]}
 
 
@@ -381,7 +383,7 @@ def generate_video(model: str, prompt: str, out: str | Path, workspace: str | Pa
                    negative_prompt: str | None = None, settings: dict | None = None, gpu: dict | None = None,
                    verify: bool = True, progress=None, cancelled=None) -> dict:
     ws = Path(workspace).resolve()
-    o = inside(out, ws).with_suffix(".mp4")
+    o = out_inside(out, ws).with_suffix(".mp4")
     if not prompt or len(prompt) > 2000:
         raise MediaError("prompt must be 1..2000 characters")
     path, spec, info, plan = _prepare(model, "video", settings, gpu, False, verify)
@@ -419,7 +421,7 @@ def generate_video(model: str, prompt: str, out: str | Path, workspace: str | Pa
             "seed": seed, "steps": steps, "guidance": g, "width": size[0], "height": size[1], "frames": len(arrs),
             "fps": fps, "device": plan["device"], "dtype": plan["dtype"], "offload": plan["offload"],
             "license": spec.license, "seconds": round(time.monotonic() - t0, 2), "generator": "jev.media.generative"}
-    o.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+    wsfs.write_text(ws, o.with_suffix(".json"), json.dumps(meta, indent=2))
     return {"video": o, "meta": meta, "plan": plan, "ignored_pickles": info["ignored_pickles"]}
 
 
@@ -450,20 +452,20 @@ def download_model(name: str, settings: dict | None = None, *, revision: str = "
         except ImportError as e:
             raise MediaError("downloading models needs huggingface_hub: `pip install 'jepa-studio[gen]'`") from e
     dest = models_dir(settings) / name
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=True)  # wsfs-ok: the models folder, outside any workspace
     allow, ignore = download_patterns(spec)
     if progress:
         progress(0.01, f"downloading {spec.repo} (~{spec.download_gb:g} GB)")
     snapshot(repo_id=spec.repo, revision=revision, local_dir=str(dest), allow_patterns=allow, ignore_patterns=ignore)
     for p in dest.rglob("*"):                       # belt and braces: never keep a pickle
         if p.is_file() and p.suffix.lower() in REFUSED_SUFFIXES:
-            p.unlink()
+            p.unlink()  # wsfs-ok: the models folder
     info = inspect_model_dir(dest, spec.kind)
     files = {}
     for p in sorted(dest.rglob("*")):
         if p.is_file() and p.name != MANIFEST and ".cache" not in p.parts:
             files[p.relative_to(dest).as_posix()] = {"sha256": _sha256(p), "bytes": p.stat().st_size}
-    (dest / MANIFEST).write_text(json.dumps({"format": "jev-model/v1", "name": name, "repo": spec.repo,
+    (dest / MANIFEST).write_text(json.dumps({"format": "jev-model/v1", "name": name, "repo": spec.repo,  # wsfs-ok: the models folder
                                              "revision": revision, "license": spec.license, "files": files},
                                             indent=2))
     if progress:

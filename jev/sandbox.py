@@ -238,14 +238,38 @@ try:
             mount(None, p, None, REMOUNT | BIND | RDONLY | kept(p))
     for h in hidden:
         mount(None, h, None, REMOUNT | BIND | RDONLY | NOSUID | NODEV)
+    for sock in spec.get("mask", []):
+        try:
+            mount("/dev/null", sock, None, BIND)
+        except OSError:
+            pass
     os.chdir(spec["cwd"])
+    # Lock every mount above and give up all capabilities: a second user namespace makes the mounts
+    # "locked" (they can no longer be unmounted or remounted from inside), then securebits, the
+    # bounding set, the ambient set and capset() leave the program with no capability at all, now
+    # or after exec.
+    uid, gid = os.getuid(), os.getgid()
+    if libc.unshare(0x10000000 | 0x20000) != 0:            # CLONE_NEWUSER | CLONE_NEWNS
+        raise OSError(ctypes.get_errno(), "unshare(CLONE_NEWUSER|CLONE_NEWNS)")
+    for name, text in (("setgroups", "deny"), ("uid_map", f"{uid} {uid} 1"), ("gid_map", f"{gid} {gid} 1")):
+        with open(f"/proc/self/{name}", "w") as fh:
+            fh.write(text)
+    libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    if libc.prctl(28, 0x2F, 0, 0, 0) != 0:                  # PR_SET_SECUREBITS: NOROOT, NO_SETUID_FIXUP (+locks)
+        raise OSError(ctypes.get_errno(), "PR_SET_SECUREBITS")
+    for cap in range(64):
+        libc.prctl(24, cap, 0, 0, 0)                         # PR_CAPBSET_DROP
+    libc.prctl(47, 4, 0, 0, 0)                               # PR_CAP_AMBIENT_CLEAR_ALL
+    hdr = (ctypes.c_uint32 * 2)(0x20080522, 0)
+    data = (ctypes.c_uint32 * 6)()
+    if libc.capset(hdr, data) != 0:
+        raise OSError(ctypes.get_errno(), "capset")
     if spec.get("seccomp"):
         prog = bytes.fromhex(spec["seccomp"])
         class Fprog(ctypes.Structure):
             _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_char_p)]
         fp = Fprog(len(prog) // 8, prog)
-        libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]
-        if libc.prctl(38, 1, None, 0, 0) != 0 or libc.prctl(22, 2, ctypes.addressof(fp), 0, 0) != 0:
+        if libc.prctl(38, 1, 0, 0, 0) != 0 or libc.prctl(22, 2, ctypes.addressof(fp), 0, 0) != 0:
             raise OSError(ctypes.get_errno(), "seccomp filter could not be installed")
 except OSError as e:
     sys.stderr.write(f"JEV sandbox setup failed, not running: {e}\n")
@@ -359,11 +383,14 @@ def scrubbed_env(workspace: Path, extra: dict | None = None, network: bool = Fal
         if v is not None and not SECRET_RE.search(k):
             env[k] = v
     env.setdefault("PATH", os.defpath)
-    tmp = tmp or workspace / ".tmp"
-    try:
-        tmp.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+    if tmp is None:
+        from .wsfs import ensure_dir
+        tmp = ensure_dir(workspace, ".tmp")       # a link planted at .tmp is removed, never followed
+    else:
+        try:
+            Path(tmp).mkdir(parents=True, exist_ok=True)  # wsfs-ok: backend-owned scratch given by the caller
+        except OSError:
+            pass
     threads = str(max(1, min(4, os.cpu_count() or 1)))
     env.update({"HOME": str(workspace), "USERPROFILE": str(workspace), "TMPDIR": str(tmp), "TEMP": str(tmp),
                 "TMP": str(tmp), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONIOENCODING": "utf-8",
@@ -414,7 +441,7 @@ def trusted_venv_python(venv: Path) -> Path | None:
     if base_exe:
         bases.add(Path(base_exe).resolve())
     try:
-        cfg = (venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+        cfg = (venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")  # wsfs-ok: the package venv lives in jev-data
     except OSError:
         return None
     home = next((ln.split("=", 1)[1].strip() for ln in cfg.splitlines() if ln.split("=", 1)[0].strip() == "home"), "")
@@ -434,11 +461,11 @@ def trusted_venv_python(venv: Path) -> Path | None:
     want = set()
     for cand in [Path(_venv_mod.__file__).parent / "scripts" / "nt" / "python.exe", *bases]:
         try:
-            want.add(hashlib.sha256(cand.read_bytes()).hexdigest())
+            want.add(hashlib.sha256(cand.read_bytes()).hexdigest())  # wsfs-ok: the Python install
         except OSError:
             pass
     try:
-        return exe if hashlib.sha256(exe.read_bytes()).hexdigest() in want else None
+        return exe if hashlib.sha256(exe.read_bytes()).hexdigest() in want else None  # wsfs-ok: the package venv in jev-data
     except OSError:
         return None
 
@@ -527,7 +554,7 @@ def wsl_info(proc: str = "/proc", run: str = "/run") -> dict:
     """Is this WSL, and is Windows interop (running .exe files from Linux) switched on?"""
     def read(p):
         try:
-            return Path(p).read_text(errors="replace")
+            return Path(p).read_text(errors="replace")  # wsfs-ok: /proc files
         except OSError:
             return ""
     rel = (read(f"{proc}/sys/kernel/osrelease") + read(f"{proc}/version")).lower()
@@ -544,10 +571,14 @@ def wsl_info(proc: str = "/proc", run: str = "/run") -> dict:
 
 
 def seccomp_program(machine: str | None = None) -> bytes | None:
-    """A classic-BPF seccomp filter for bwrap: socket(AF_VSOCK, ...) fails with EAFNOSUPPORT (WSL2
-    and VMs talk to their host over vsock, which network namespaces do not isolate); syscalls from
-    other ABIs (32-bit, x32) fail with ENOSYS so they cannot get around that check; the rest is
-    allowed. None for machines we have no syscall numbers for."""
+    """A classic-BPF seccomp filter for sandboxed runs:
+      * socket(AF_VSOCK, ...) fails with EAFNOSUPPORT (WSL2 and VMs talk to their host over vsock,
+        which network namespaces do not isolate);
+      * io_uring_setup / io_uring_enter / io_uring_register fail with ENOSYS: io_uring can create
+        sockets (IORING_OP_SOCKET) without the socket() syscall, so it would bypass the check
+        above (the same three are blocked by Docker's default profile);
+      * syscalls from other ABIs (32-bit, x32) fail with ENOSYS so they cannot get around either;
+    the rest is allowed. None for machines we have no syscall numbers for."""
     arch = {"x86_64": (0xC000003E, 41, True), "amd64": (0xC000003E, 41, True),
             "aarch64": (0xC00000B7, 198, False), "arm64": (0xC00000B7, 198, False)}.get(
         (machine or platform.machine()).lower())
@@ -555,15 +586,18 @@ def seccomp_program(machine: str | None = None) -> bytes | None:
         return None
     audit_arch, nr_socket, x32 = arch
     allow, errno_ = 0x7FFF0000, 0x00050000
+    enosys = errno_ | 38
     ld, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
     prog: list[tuple[int, int, int, int]] = [
         (ld, 0, 0, 4),                          # A = arch
         (jeq, 1, 0, audit_arch),                # native ABI -> continue, else
-        (ret, 0, 0, errno_ | 38),               # ENOSYS
+        (ret, 0, 0, enosys),
         (ld, 0, 0, 0),                          # A = syscall number
     ]
     if x32:
-        prog += [(jge, 0, 1, 0x40000000), (ret, 0, 0, errno_ | 38)]
+        prog += [(jge, 0, 1, 0x40000000), (ret, 0, 0, enosys)]
+    for nr in (425, 426, 427):                  # io_uring_setup, io_uring_enter, io_uring_register (both ABIs)
+        prog += [(jeq, 0, 1, nr), (ret, 0, 0, enosys)]
     prog += [
         (jeq, 0, 3, nr_socket),                 # socket()? else allow
         (ld, 0, 0, 16),                         # A = args[0] (domain, low 32 bits)
@@ -572,6 +606,32 @@ def seccomp_program(machine: str | None = None) -> bytes | None:
         (ret, 0, 0, allow),
     ]
     return b"".join(struct.pack("=HBBI", *i) for i in prog)
+
+
+def listening_unix_sockets(limit: int = 2000) -> list[str]:
+    """Paths of the Unix sockets listening on this host (from /proc/net/unix): bubblewrap and
+    unshare mask the ones the sandbox could otherwise see (/var/lib/mysql/mysqld.sock, LXD, ...)."""
+    out: list[str] = []
+    try:
+        with open("/proc/net/unix", encoding="utf-8", errors="replace") as f:  # wsfs-ok: kernel table
+            next(f, None)
+            for line in f:
+                cols = line.split(None, 7)
+                if len(cols) < 8 or not cols[7].startswith("/"):
+                    continue
+                if int(cols[3], 16) & 0x10000 == 0:         # __SO_ACCEPTCON: listening
+                    continue
+                path = cols[7].rstrip("\n")
+                try:
+                    if stat.S_ISSOCK(os.lstat(path).st_mode) and path not in out:
+                        out.append(path)
+                except OSError:
+                    continue
+                if len(out) >= limit:
+                    break
+    except OSError:
+        pass
+    return out
 
 
 def macos_profile(ws: Path, network: bool = False, *, read_only=(), writable=(), hide=(), exec_paths=(),
@@ -644,10 +704,34 @@ class Spawned:
     job: object = None
     unit: str | None = None
     check_workspace: bool = True
+    token: str = ""
     _finished: bool = False
+    _tracked: dict = field(default_factory=dict)
+    _next_track: float = 0.0
+    _next_size: float = 0.0
+    _size_every: float = 1.0
+    over: str | None = None
 
     def kill(self) -> None:
-        self.sandbox._kill_tree(self.proc, self.job, self.unit)
+        self.sandbox._kill_tree(self.proc, self.job, self.unit, self)
+
+    def guard(self) -> str | None:
+        """Call often while the run is going: remembers every descendant (so a process that kills its
+        launcher can still be found) and enforces max_workspace_mb during the run. Returns an error
+        text (and kills the run) when the workspace goes over its cap."""
+        now = time.monotonic()
+        if now >= self._next_track and self.method not in ("bwrap", "unshare"):
+            self._next_track = now + 0.1
+            self.sandbox._track(self)
+        if self.check_workspace and now >= self._next_size:
+            t0 = time.monotonic()
+            self.over = self.sandbox.workspace_over(self.workspace, self.limits)
+            took = time.monotonic() - t0
+            self._next_size = time.monotonic() + max(self._size_every, 10 * took)   # at most ~10% of the time
+            if self.over:
+                self.kill()
+                return self.over
+        return None
 
     def finish(self) -> str | None:
         """Kill leftovers, release the job, and return an error text if the workspace is now over
@@ -659,8 +743,8 @@ class Spawned:
         if self.job:
             self.job.close()
         if self.check_workspace:
-            return self.sandbox.workspace_over(self.workspace, self.limits)
-        return None
+            return self.over or self.sandbox.workspace_over(self.workspace, self.limits)
+        return self.over
 
 
 # ---------------------------------------------------------------------------------------- sandbox
@@ -688,6 +772,14 @@ class Sandbox:
             caps["network_isolation"] = "disabled (network_allowed is on)"
         caps["limits"] = self.limits.__dict__.copy()
         return caps
+
+    def _exe(self, name: str) -> str | None:
+        """Absolute path of a sandbox helper (bwrap, unshare, ...), looked up once: later PATH changes
+        (a tool's own environment) never change which binary wraps the runs."""
+        cache = self.__dict__.setdefault("_exes", {})
+        if name not in cache:
+            cache[name] = shutil.which(name)
+        return cache[name]
 
     def wsl(self) -> dict:
         if self._wsl is None:
@@ -743,7 +835,7 @@ class Sandbox:
                 continue
             if method in ("bwrap", "unshare") and not IS_LINUX:
                 continue
-            if not shutil.which(method):
+            if not self._exe(method):
                 notes.append(f"{method}: not installed")
                 continue
             res = self._probe(method)
@@ -791,9 +883,9 @@ class Sandbox:
         with tempfile.TemporaryDirectory(prefix="jev-probe-") as d:
             data = Path(d) / DATA_DIRNAME
             ws = data / "workspaces" / "ws"
-            ws.mkdir(parents=True)
+            ws.mkdir(parents=True)  # wsfs-ok: probe temp folder
             outside = Path(d) / "outside"
-            outside.mkdir()
+            outside.mkdir()  # wsfs-ok: probe temp folder
             argv, fds = self._wrap(method, [sys.executable, "-I", "-S", "-c", PROBE, str(ws), str(outside), str(data)],
                                    ws, network=False, mounts=Mounts(), cwd=ws, limits=self.limits, hide_extra=[data])
             try:
@@ -869,7 +961,7 @@ class Sandbox:
             shell = Path(argv[0]).name.lower() in ("bash", "sh", "zsh", "dash", "pwsh")
             prof = macos_profile(ws, network, read_only=[*self._keep_paths(), *mounts.ro],
                                  writable=[*mounts.rw], hide=hide, exec_paths=exec_paths, shell=shell)
-            return ["sandbox-exec", "-p", prof] + argv, []
+            return [self._exe("sandbox-exec") or "sandbox-exec", "-p", prof] + argv, []
         return argv, []
 
     def _hidden_dirs(self, ws: Path, hide_extra=()) -> list[Path]:
@@ -898,7 +990,7 @@ class Sandbox:
         return out
 
     def _wrap_bwrap(self, argv, ws, network, mounts, cwd, lim, hide_extra) -> tuple[list[str], list[int]]:
-        a = ["bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        a = [self._exe("bwrap") or "bwrap", "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
              "--unshare-cgroup-try", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
         sized = bwrap_supports_size(_bwrap_version())
         tmp_bytes = max(64, int(lim.memory_mb)) << 20
@@ -909,8 +1001,9 @@ class Sandbox:
         if sized:
             a += ["--size", str(tmp_bytes), "--tmpfs", "/tmp", "--size", str(tmp_bytes), "--tmpfs", "/dev/shm"]
         else:
-            shm = ws_tmp / ".shm"
-            shm.mkdir(parents=True, exist_ok=True)
+            from .wsfs import ensure_dir
+            ws_tmp = ensure_dir(ws, ".tmp")           # never bind a planted link onto /tmp
+            shm = ensure_dir(ws, ".tmp/.shm")
             if _under(ws, Path("/tmp")):
                 a += ["--tmpfs", "/tmp"]
                 late_ro.append(Path("/tmp"))
@@ -933,10 +1026,12 @@ class Sandbox:
                     "/dev/dxg", "/dev/dri", "/dev/kfd", *[f"/dev/nvidia{i}" for i in range(8)]):
             if os.path.exists(dev):
                 a += ["--dev-bind", dev, dev]
-        for sock in ("/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock"):
-            if os.path.exists(sock) and not os.path.islink(sock) and \
-                    not any(_under(Path(sock), h) for h in hidden):
-                a += ["--ro-bind", "/dev/null", sock]
+        socks = ["/run/docker.sock", "/var/run/docker.sock", "/run/podman/podman.sock", *listening_unix_sockets()]
+        for sock in dict.fromkeys(socks):
+            sp = Path(sock)
+            if os.path.exists(sock) and not os.path.islink(sock) and not _under(sp, ws) and \
+                    not any(_under(sp, h) for h in hidden) and not _under(sp, Path("/tmp")):
+                a += ["--ro-bind", "/dev/null", sock]       # listening sockets outside the hidden folders
         ro = list(self._keep_paths())
         if network:
             # a proxy CA bundle or resolv.conf living in a hidden folder must stay reachable
@@ -946,13 +1041,17 @@ class Sandbox:
                     ro.append(Path(v).resolve())
             if os.path.exists("/etc/resolv.conf"):
                 ro.append(Path("/etc/resolv.conf").resolve())
-        ro += [Path(p).resolve() for p in mounts.ro]
         for p in ro:
             if p.exists() and any(_under(p, h) for h in hidden) and not any(_under(h, p) for h in hidden):
                 a += ["--ro-bind", str(p), str(p)]
+        for p in mounts.ro:                          # always explicit: they may sit in a hidden or private folder
+            p = Path(p).resolve()
+            if p.exists():
+                a += ["--ro-bind", str(p), str(p)]
         for p in mounts.rw:
             p = Path(p).resolve()
-            a += ["--bind", str(p), str(p)]
+            if p.exists():
+                a += ["--bind", str(p), str(p)]
         a += ["--bind" if mounts.workspace_writable else "--ro-bind", str(ws), str(ws)]
         for h in hidden + late_ro:
             a += ["--remount-ro", str(h)]
@@ -986,8 +1085,10 @@ class Sandbox:
         spec = {"hide": sorted(set(hide), key=lambda p: (len(Path(p).parts), p)), "ro": ro,
                 "rw": [str(Path(p).resolve()) for p in mounts.rw], "ws": str(ws),
                 "ws_rw": bool(mounts.workspace_writable), "cwd": str(cwd), "symlinks": links,
-                "seccomp": (seccomp_program() or b"").hex()}
-        ns = ["unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child", "--mount-proc"]
+                "seccomp": (seccomp_program() or b"").hex(),
+                "mask": [p for p in listening_unix_sockets() if not _under(Path(p), ws)
+                         and not any(_under(Path(p), Path(h)) for h in hide)]}
+        ns = [self._exe("unshare") or "unshare", "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child", "--mount-proc"]
         if not network:
             ns.append("--net")
         return ns + ["--", sys.executable, "-I", "-S", "-c", PRELUDE, json.dumps(spec)] + argv
@@ -1013,12 +1114,13 @@ class Sandbox:
         if isinstance(argv, str):
             raise TypeError("argv must be a list")
         ws = Path(workspace).resolve()
-        ws.mkdir(parents=True, exist_ok=True)
+        ws.mkdir(parents=True, exist_ok=True)  # wsfs-ok: the workspace folder itself (resolved, created by the backend)
         lim = limits or self.limits
         if check_workspace and (over := self.workspace_over(ws, lim)):
             raise SandboxError(over)
         run_cwd = Path(cwd).resolve() if cwd else ws
-        if not _under(run_cwd, ws):
+        allowed = [ws, *[Path(p).resolve() for p in ((mounts.rw if mounts else []) + (mounts.ro if mounts else []))]]
+        if not any(_under(run_cwd, a) for a in allowed):
             raise SandboxError(f"cwd {run_cwd} is outside the workspace")
         caps = self.capabilities()
         if honor_network_setting:
@@ -1033,14 +1135,17 @@ class Sandbox:
         elif IS_LINUX and caps.get("cgroup_scope"):
             import secrets
             unit = f"jev-run-{secrets.token_hex(6)}"
-            full = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
+            full = [self._exe("systemd-run") or "systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", unit,
                     "-p", f"MemoryMax={int(lim.memory_mb)}M", "-p", "TasksMax=512", "--"] + full
         if not IS_WIN:
             nproc = _user_process_count() + 256
             kind = 0 if IS_LINUX else 1
             spec = f"{lim.cpu_seconds},{lim.memory_mb << 20},{lim.max_output_mb << 20},{nproc},512,{kind}"
             full = [sys.executable, "-I", "-S", "-c", LAUNCHER, spec] + full
+        import secrets as _secrets
+        token = _secrets.token_hex(12)
         env = scrubbed_env(ws, extra_env, network=network, venv=venv, tmp=tmp)
+        env["JEV_RUN_ID"] = token          # lets the end-of-run sweep find descendants that escaped the tree
         job = None
         kw: dict = {}
         if IS_WIN:
@@ -1077,7 +1182,9 @@ class Sandbox:
                     pass
                 job.close()
                 raise SandboxError(f"refused: the process could not be put into its Job Object ({e})") from e
-        return Spawned(proc, self, ws, lim, method, job, unit, check_workspace)
+        sp = Spawned(proc, self, ws, lim, method, job, unit, check_workspace, token)
+        sp._next_size = time.monotonic() + 0.5
+        return sp
 
     def run(self, argv: list[str], workspace: Path, limits: Limits | None = None, network: bool = False,
             cancelled: Callable[[], bool] | None = None, extra_env: dict | None = None,
@@ -1087,7 +1194,7 @@ class Sandbox:
         if isinstance(argv, str):
             raise TypeError("argv must be a list")
         ws = Path(workspace).resolve()
-        ws.mkdir(parents=True, exist_ok=True)
+        ws.mkdir(parents=True, exist_ok=True)  # wsfs-ok: the workspace folder itself (resolved, created by the backend)
         lim = limits or self.limits
         method = self.capabilities()["method"]
         before = snapshot(ws)
@@ -1123,11 +1230,14 @@ class Sandbox:
                 pass
         timed_out = was_cancelled = False
         deadline = t0 + lim.wall_seconds
+        sp.guard()
         while True:
             try:
-                proc.wait(timeout=0.1)
+                proc.wait(timeout=0.05)
                 break
             except subprocess.TimeoutExpired:
+                if sp.guard():
+                    break                     # over max_workspace_mb: guard() killed the run
                 if cancelled and cancelled():
                     was_cancelled = True
                 elif time.monotonic() > deadline:
@@ -1176,7 +1286,47 @@ class Sandbox:
         return RunResult(rc, out, stderr, seconds, timed_out, was_cancelled, bool(dropped["out"] or dropped["err"]),
                          limit_hit, changed, method, workspace_over=over)
 
-    def _kill_tree(self, proc: subprocess.Popen, job, unit: str | None = None) -> None:
+    @staticmethod
+    def _track(sp: "Spawned") -> None:
+        try:
+            import psutil
+            for k in psutil.Process(sp.proc.pid).children(recursive=True):
+                sp._tracked.setdefault(k.pid, k.create_time())
+        except Exception:  # noqa: BLE001 - the launcher already exited
+            pass
+
+    @staticmethod
+    def _sweep(sp: "Spawned") -> None:
+        """Without a PID namespace or cgroup: kill every process seen in this run's tree (pid +
+        start time checked) and every process of this user still carrying the run's JEV_RUN_ID."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        me = os.getpid()
+        for pid, ct in list(sp._tracked.items()):
+            try:
+                p = psutil.Process(pid)
+                if abs(p.create_time() - ct) < 0.01:
+                    p.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        if not sp.token:
+            return
+        mark = sp.token
+        uid = os.getuid() if hasattr(os, "getuid") else None
+        for p in psutil.process_iter(["pid", "uids"]):
+            try:
+                if p.pid == me or (uid is not None and p.info["uids"] and p.info["uids"].real != uid):
+                    continue
+                if p.environ().get("JEV_RUN_ID") == mark:
+                    p.kill()
+            except Exception:  # noqa: BLE001
+                continue
+
+    def _kill_tree(self, proc: subprocess.Popen, job, unit: str | None = None, sp: "Spawned | None" = None) -> None:
+        if sp is not None and sp.method not in ("bwrap", "unshare"):
+            self._track(sp)
         if job:
             job.terminate()
         if IS_WIN:
@@ -1204,6 +1354,8 @@ class Sandbox:
                 k.kill()
             except Exception:  # noqa: BLE001
                 pass
+        if sp is not None and sp.method not in ("bwrap", "unshare"):
+            self._sweep(sp)
 
     # ------------------------------------------------------------------ Windows job object
     @staticmethod

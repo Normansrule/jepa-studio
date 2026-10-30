@@ -31,7 +31,7 @@ from jepa_studio.config import validate
 
 from .jobs import Job, JobManager
 from .llm import Cancelled, Ollama, OllamaError, ToolsUnsupported, is_cloud_model
-from .policy import ApprovalBroker, Decision, Policy, check_path
+from .policy import ApprovalBroker, Decision, Policy, canonical_args, check_path
 from .sandbox import Sandbox
 from .settings import Settings, private_dir
 from .store import Store
@@ -425,7 +425,8 @@ def execute_call(rt: Runtime, job: Job, cid: str, tid: str, ws: Path, call: dict
         a = rt.broker.request("tool", name, args, d.reason, spec.risk, d.rules, cid, tid, call_id)
         # the full arguments (never cut) and their SHA-256: approving must echo that hash
         job.emit("approval_request", approval_id=a.id, call_id=call_id, name=name, args=args,
-                 args_sha256=a.args_sha256, reason=d.reason, risk=spec.risk, rules=d.rules)
+                 args_canonical=canonical_args(args), args_sha256=a.args_sha256, reason=d.reason, risk=spec.risk,
+                 rules=d.rules)
         job.status = "waiting_approval"
         timeout = float(rt.settings.resolved()["approval_timeout_s"])
         outcome = rt.broker.wait(a.id, timeout, job.cancelled)

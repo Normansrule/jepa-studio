@@ -42,6 +42,7 @@ from typing import Callable, Iterable, Iterator
 
 import numpy as np
 
+from jev import wsfs
 from jev.sandbox import Limits as RunLimits
 from jev.sandbox import Mounts, Sandbox, SandboxError, Spawned, sandbox_for
 
@@ -106,10 +107,13 @@ def _run_limits(sb: Sandbox, timeout: float | None) -> RunLimits:
 
 def _spawn(cmd: list[str], ws: Path, *, cwd: Path | None = None, stdin: bool = False, text: bool = False,
            timeout: float | None = 3600.0) -> Spawned:
+    """FFmpeg / ffprobe in the sandbox: the workspace read-only (outputs are produced in backend
+    scratch and published by the backend), this call's scratch folders writable, no network."""
     sb = current_sandbox()
     try:
         return sb.spawn(cmd, ws, _run_limits(sb, timeout), network=False, cwd=cwd, stdin=stdin, text=text,
-                        mounts=Mounts(ro=_bin_dirs()), honor_network_setting=False)
+                        mounts=Mounts(ro=_bin_dirs(), rw=wsfs.scratch_roots(), workspace_writable=False),
+                        honor_network_setting=False)
     except SandboxError as e:
         raise MediaError(f"FFmpeg was not started: {e}") from e
 
@@ -151,8 +155,10 @@ def sniff_container(path: str | Path) -> tuple[str, list[str]]:
     playlists such as ffconcat or m3u8, SDP, scripts, unknown data) raises MediaError."""
     p = Path(path)
     try:
-        with open(p, "rb") as f:
+        with wsfs.open_file(p.parent, p.name, "rb") as f:     # no link followed, no FIFO
             head = f.read(4096)
+    except wsfs.UnsafePath as e:
+        raise MediaError(str(e)) from e
     except OSError as e:
         raise MediaError(f"{p.name}: cannot read ({e.strerror})") from e
     ext = p.suffix.lower()
@@ -194,6 +200,22 @@ def sniff_container(path: str | Path) -> tuple[str, list[str]]:
                      "image containers, never playlists or scripts such as ffconcat, m3u8 or sdp)")
 
 
+def _locate(path: str | Path, ws: Path) -> tuple[Path, Path]:
+    """(root, resolved path): `path` must be inside the workspace or one of this call's scratch folders."""
+    ws = Path(ws).resolve()
+    p = Path(path)
+    p = p if p.is_absolute() else ws / p
+    try:
+        return ws, inside(p, ws)
+    except MediaError:
+        for d in wsfs.scratch_roots():
+            try:
+                return d, inside(p, d)
+            except MediaError:
+                continue
+        raise
+
+
 def check_input_file(raw: str | Path, ws: Path, weak: bool | None = None) -> Path:
     """Resolve an input inside the workspace and refuse anything but a plain regular file. On a weak
     sandbox (no file-system isolation) symlinks and hard-linked files are refused as well, because
@@ -202,7 +224,7 @@ def check_input_file(raw: str | Path, ws: Path, weak: bool | None = None) -> Pat
     rawp = Path(raw)
     rawp = rawp if rawp.is_absolute() else ws / rawp
     weak = _weak(current_sandbox()) if weak is None else weak
-    p = inside(rawp, ws)
+    root, p = _locate(rawp, ws)
     if weak and rawp.is_symlink():
         raise MediaError(f"{rawp.name} is a symbolic link; media tools do not follow links on this computer's "
                          "sandbox (it has no file-system isolation)")
@@ -210,8 +232,9 @@ def check_input_file(raw: str | Path, ws: Path, weak: bool | None = None) -> Pat
         st = os.lstat(p)
     except OSError as e:
         raise MediaError(f"input not found: {rawp.name}") from e
-    if not stat.S_ISREG(st.st_mode):
-        raise MediaError(f"{rawp.name} is not a regular file (FIFO, socket, device or folder); refused")
+    if not stat.S_ISREG(st.st_mode) or not wsfs.is_regular(root, p):
+        raise MediaError(f"{rawp.name} is not a regular file (FIFO, socket, device or folder), or is reached "
+                         "through a link; refused")
     if weak and st.st_nlink > 1:
         raise MediaError(f"{rawp.name} is a hard link to another file; media tools refuse hard links on this "
                          "computer's sandbox (it has no file-system isolation)")
@@ -228,8 +251,8 @@ def input_args(path: str | Path, ws: Path, weak: bool | None = None) -> tuple[li
 def _check_concat_list(lst: Path, ws: Path, weak: bool) -> None:
     """JEV's own concat lists: `file '<plain name>'` lines naming regular media files next to the list."""
     try:
-        text = lst.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
+        text = wsfs.read_text(lst.parent, lst.name)
+    except (OSError, UnicodeDecodeError, wsfs.UnsafePath) as e:
         raise MediaError(f"{lst.name}: unreadable concat list") from e
     names = []
     for line in text.splitlines():
@@ -350,7 +373,7 @@ def _check_filters(args: list[str], workspace: Path, cwd: Path | None) -> None:
                 raise MediaError("filter graphs that open files or load plugins (movie=, textfile=, file=, "
                                  "ladspa, sendcmd, ...) are not allowed")
             for m in _SUBTITLE_FILE.finditer(a):
-                inside((cwd or workspace) / m.group(1), workspace)
+                _locate((cwd or workspace) / m.group(1), workspace)
 
 
 def _prepare_args(args: list[str], workspace: Path, outputs: Iterable[str | Path], cwd: Path | None) -> list[str]:
@@ -375,7 +398,7 @@ def _prepare_args(args: list[str], workspace: Path, outputs: Iterable[str | Path
             if _PROTOCOL.search(src) and not re.match(r"^[A-Za-z]:[\\/]", src):
                 raise MediaError(f"input {src!r} looks like a URL or protocol; only workspace files are read")
             raw = Path(cwd) / src if cwd and not Path(src).is_absolute() else Path(src)
-            inside(raw, ws)
+            _locate(raw, ws)
             if fmt == "concat":
                 p = check_input_file(raw, ws, weak)
                 _check_concat_list(p, ws, weak)
@@ -395,8 +418,50 @@ def _prepare_args(args: list[str], workspace: Path, outputs: Iterable[str | Path
     for o in outputs:
         if str(o).startswith("pipe:"):
             continue
-        inside(o, ws)
+        raw = Path(o) if Path(o).is_absolute() else ws / o
+        _locate(raw.parent, ws)
     return out
+
+
+def _stage_outputs(args: list[str], outputs: list, ws: Path) -> tuple[list[str], list[tuple[Path, Path, Path]]]:
+    """Outputs that belong in the workspace are written by FFmpeg into scratch and published by the
+    backend afterwards (FFmpeg itself only sees the workspace read-only): returns the rewritten
+    arguments and [(final path, scratch file, scratch folder)]."""
+    staged = []
+    args = list(args)
+    for o in outputs:
+        if str(o).startswith("pipe:"):
+            continue
+        raw = Path(o) if Path(o).is_absolute() else Path(ws) / o
+        root, parent = _locate(raw.parent, ws)
+        op = parent / raw.name                         # the final name is not resolved: a link there is replaced
+        if root != Path(ws).resolve():
+            continue                                   # already in scratch
+        try:
+            wsfs.check_output(ws, op)
+        except wsfs.UnsafePath as e:
+            raise MediaError(str(e)) from e
+        d = wsfs.new_scratch("out-")
+        tmp = d / op.name
+        names = {str(o), str(op), str(Path(o))}
+        args = [str(tmp) if a in names else a for a in args]
+        staged.append((op, tmp, d))
+    return args, staged
+
+
+def _publish(staged, ws: Path, label: str) -> None:
+    for final, tmp, d in staged:
+        try:
+            wsfs.publish(ws, final, tmp)
+        except (OSError, wsfs.UnsafePath) as e:
+            raise MediaError(f"{label}: could not write {final.name} into the workspace ({e})") from e
+        finally:
+            wsfs.drop_scratch(d)
+    over = current_sandbox().workspace_over(ws)
+    if over:
+        for final, _, _ in staged:
+            wsfs.unlink(ws, final)
+        raise MediaError(f"{label}: {over}")
 
 
 def run(args: list[str], workspace: str | Path, *, outputs: Iterable[str | Path] = (),
@@ -406,10 +471,17 @@ def run(args: list[str], workspace: str | Path, *, outputs: Iterable[str | Path]
     """Run `ffmpeg <args>` in the sandbox (the binary and global flags are added here). `outputs`
     lists every output file so it can be checked against the workspace. Raises MediaError on
     failure, timeout or cancellation (the partial output is removed)."""
+    with wsfs.ensure_scratch():
+        return _run(args, workspace, outputs=outputs, duration_s=duration_s, progress=progress, cancelled=cancelled,
+                    timeout=timeout, cwd=cwd, label=label)
+
+
+def _run(args, workspace, *, outputs, duration_s, progress, cancelled, timeout, cwd, label) -> RunResult:
     ws = Path(workspace).resolve()
-    cwd_p = inside(cwd, ws) if cwd else None
+    cwd_p = _locate(cwd, ws)[1] if cwd else None
     outputs = list(outputs)
     prepared = _prepare_args([str(a) for a in args], ws, outputs, cwd_p)
+    prepared, staged = _stage_outputs(prepared, outputs, ws)
     cmd = [find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
            "-progress", "pipe:1", "-nostats", *prepared]
     t0 = time.monotonic()
@@ -453,14 +525,17 @@ def run(args: list[str], workspace: str | Path, *, outputs: Iterable[str | Path]
         t.join(timeout=2)
     res = RunResult(proc.returncode, time.monotonic() - t0, "\n".join(tail), dict(state))
     if reason or proc.returncode != 0 or over:
+        for _, _, d in staged:
+            wsfs.drop_scratch(d)                    # the partial output never reaches the workspace
         for o in outputs:
-            if not str(o).startswith("pipe:"):
-                Path(o).unlink(missing_ok=True)
+            if not str(o).startswith("pipe:") and wsfs.in_scratch(_locate(o, ws)[1]):
+                wsfs.unlink(_locate(o, ws)[0], _locate(o, ws)[1])
         if reason:
             raise MediaError(f"{label} {reason}")
         if over:
             raise MediaError(f"{label}: {over}")
         raise MediaError(f"{label} failed (exit {proc.returncode}): {res.stderr_tail[-600:] or 'no message'}")
+    _publish(staged, ws, label)
     if progress:
         progress(1.0, label)
     return res
@@ -582,7 +657,7 @@ def probe(path: str | Path, workspace: str | Path, limits: Limits | None = None,
           | "audio" (max_output_seconds; no frame-size check)."""
     limits = limits or Limits()
     ws = Path(workspace).resolve()
-    inside(path, ws)
+    _locate(path, ws)
     rawp = Path(path) if Path(path).is_absolute() else ws / path
     if not rawp.exists():
         raise MediaError(f"not found: {Path(path).name}")
@@ -700,12 +775,21 @@ def encode_frames(frames: Iterable[np.ndarray], out: str | Path, workspace: str 
                   progress: ProgressFn | None = None, cancelled: CancelFn | None = None,
                   timeout: float = 3600.0, label: str = "encoding") -> Path:
     """Encode RGB uint8 frames (H, W, 3) to an H.264 MP4 (yuv420p, faststart), no audio."""
+    with wsfs.ensure_scratch():
+        return _encode_frames(frames, out, workspace, size=size, fps=fps, total_frames=total_frames, crf=crf,
+                              preset=preset, progress=progress, cancelled=cancelled, timeout=timeout, label=label)
+
+
+def _encode_frames(frames, out, workspace, *, size, fps, total_frames, crf, preset, progress, cancelled, timeout,
+                   label) -> Path:
     ws = Path(workspace).resolve()
-    o = inside(out, ws)
+    raw = Path(out) if Path(out).is_absolute() else ws / out
+    o = _locate(raw.parent, ws)[1] / raw.name
     w, h = size
     cmd = [find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "rawvideo",
            "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{fps:g}", "-i", "pipe:0", *h264_args(crf, preset),
            "-movflags", "+faststart", str(o)]
+    cmd, staged = _stage_outputs(cmd, [o], ws)
     sp = _spawn(cmd, ws, stdin=True, timeout=timeout)
     proc = sp.proc
     tail: deque[bytes] = deque(maxlen=20)
@@ -746,10 +830,12 @@ def encode_frames(frames: Iterable[np.ndarray], out: str | Path, workspace: str 
     over = sp.finish()
     t_err.join(timeout=2)
     err = err or over
-    if err or proc.returncode != 0:
-        o.unlink(missing_ok=True)
-        raise MediaError(err or f"{label} failed: {b''.join(tail).decode('utf-8', 'replace')[-400:]}")
-    if i == 0:
-        o.unlink(missing_ok=True)
-        raise MediaError(f"{label}: no frames")
+    if err or proc.returncode != 0 or i == 0:
+        for _, _, d in staged:
+            wsfs.drop_scratch(d)
+        if not staged:
+            wsfs.unlink(*_locate(o, ws))
+        raise MediaError(err or (f"{label}: no frames" if i == 0 and proc.returncode == 0 else
+                                 f"{label} failed: {b''.join(tail).decode('utf-8', 'replace')[-400:]}"))
+    _publish(staged, ws, label)
     return o

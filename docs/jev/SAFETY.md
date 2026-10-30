@@ -43,7 +43,9 @@ the OS sandboxing primitives, Ollama, llama.cpp, Python or ffmpeg themselves, an
    gets a decision, `run`, `ask` or `deny`, from one editable table.
 3. **Approvals**: `ask` pauses the turn until you approve or deny in the app (or `y/N` in
    `jev chat`); no answer in 30 minutes (`approval_timeout_s`) counts as deny. The card shows the
-   complete arguments and their SHA-256; approving must send that hash back.
+   complete arguments (invisible and text-direction characters as visible `\uXXXX` escapes, with a
+   warning) and their SHA-256, which the app computes itself over the canonical JSON after checking
+   that it is exactly what the card shows; the backend refuses an approval whose hash differs.
 4. **The sandbox** (`jev/sandbox.py`): code, and the media tools' FFmpeg / ffprobe, run as a
    separate process in the workspace with a scrubbed environment, resource limits, a wall clock,
    a cap on the workspace's total size and (where the OS supports it) no network and a read-only
@@ -99,7 +101,8 @@ remembered, so it is granted exactly when you approve it (or when your settings 
 | Locked rows cannot be loosened by settings (only tightened); a `tool:` override cannot go below them; settings are validated on load | `Policy.action_for`, `settings._check` | `test_jev_policy.py::test_table_is_complete_and_locked_rows_deny`, `test_jev_security_regressions.py::test_m1_settings_file_is_validated`, `test_m1_weak_sandbox_makes_every_code_and_ffmpeg_tool_ask` |
 | Tool arguments are validated against the tool's JSON Schema; invalid calls are refused and reported to the model | `agent.execute_call` | `test_jev_agent.py::test_policy_deny_and_invalid_args_reach_the_model` |
 | Approve, deny and timeout paths; the turn waits for you | `ApprovalBroker`, `agent.execute_call` | `test_jev_agent.py::test_shell_approval_approve_deny_and_timeout`, `test_jev_api.py::test_approval_flow_over_http`, `test_jev_cli.py::test_chat_denies_on_eof` |
-| Approval cards carry the complete arguments and their SHA-256; approving must echo the hash; arguments too large to show are refused | `Approval.args_sha256`, `ApprovalBroker.decide`, `APPROVAL_MAX_CHARS` | `test_jev_security_regressions.py::test_l1_approval_card_has_full_args_and_hash_checked_decisions`, `test_jev_ui.py::test_jev_scripted_turn_with_approval` |
+| Approval cards carry the complete arguments and their canonical JSON; the app checks that JSON is what it shows, hashes it itself (Web Crypto, or a built-in SHA-256) and sends that hash; the backend refuses a mismatch; arguments too large to show are refused | `canonical_args`, `Approval.args_sha256`, `ApprovalBroker.decide`, `approvals.js` (`approvalHash`), `APPROVAL_MAX_CHARS` | `test_jev_security_regressions.py::test_l1_approval_card_has_full_args_and_hash_checked_decisions`, `test_jev_ui.py::test_jev_scripted_turn_with_approval`, `test_approval_card_reveals_hidden_characters_and_refuses_mismatched_arguments` |
+| Invisible and text-direction characters (U+202E, zero-width, controls) are shown on the card as `\uXXXX` with a warning | `approvals.js` (`reveal`) | `test_jev_ui.py::test_approval_card_reveals_hidden_characters_and_refuses_mismatched_arguments` |
 | "Remember" covers exact arguments in one conversation; shell, installs, network, deletes, models and outside paths are never remembered; nothing survives a restart | `Policy.remember`, `RULES` (remember column) | `test_jev_policy.py::test_session_remember_and_audit`, `test_jev_security_regressions.py::test_h3_*` |
 | Model downloads, imports, deletes and conversation deletes only happen after approval | `api.JevApi._gate` | `test_jev_api.py::test_model_pull_import_delete_need_approval`, `test_conversation_files_and_delete` |
 | Every decision, automatic ones and settings changes too, is in the audit log | `ApprovalBroker.record_auto`, `JevApi.update_settings`, `store.approvals` | `test_jev_agent.py::test_end_to_end_with_fake_ollama`, `test_jev_security_regressions.py::test_l2_settings_changes_are_audited` |
@@ -116,21 +119,22 @@ stand-in for `jev-data` lands), not what we hope. `sandbox.isolation` sums it up
 |---|---|---|---|---|---|
 | counts as | **strong** (WSL with interop on: *weaker*, see below) | **weak**: code / FFmpeg runs ask | **weak**: runs ask | **weak until a maintainer verifies the profile on a Mac**: runs ask | **weak**: runs ask |
 | no network (the host's `127.0.0.1` included) | **yes** (new network namespace) | **yes** (new network namespace) | no | **yes** if `sandbox-exec` works (deny-default profile) | **no** |
-| vsock (WSL2/VM host channel) | **refused** (seccomp) | **refused** (seccomp) | allowed | not applicable | not applicable |
-| writes outside the workspace | **blocked** (read-only bind of `/`) | not blocked, except `jev-data` | not blocked | **blocked** by the profile | not blocked |
-| `jev-data` (`settings.json`, `jev.db`, other conversations, package venvs) | **hidden** (the package venv re-exposed read-only) | **hidden** (same) | readable and writable | hidden by the profile | readable and writable |
+| vsock (WSL2/VM host channel) | **refused**: seccomp refuses `socket(AF_VSOCK)` and disables io_uring (which could create the socket without `socket()`); 32-bit / x32 syscalls refused | **refused** (same filter) | allowed | not applicable | not applicable |
+| writes outside the workspace | **blocked** (read-only bind of `/`) | not blocked, except `jev-data` and `/run` | not blocked | **blocked** by the profile | not blocked |
+| `jev-data` (`settings.json`, `jev.db`, other conversations, package venvs, JEV's scratch) | **hidden** (the package venv re-exposed read-only) | **hidden** (same); the covering mounts are locked by a second user namespace and the program runs with no capabilities, so it cannot unmount them | readable and writable | hidden by the profile | readable and writable |
 | your home folder, `/mnt` (WSL: your Windows drives), `/media` | **hidden** (read-only empty tmpfs; Python/Node/FFmpeg re-exposed read-only, never a folder that is or contains your home) | readable | readable | not readable (the profile allows only system folders, the interpreter and the workspace) | readable |
 | `/run`, `/var/run` (D-Bus, database and other Unix sockets; WSL's `/run/WSL`) | **hidden** (read-only tmpfs; only NixOS's `/run/current-system`, `/run/opengl-driver` links kept) | **hidden** | reachable | denied by the profile | not applicable |
-| `/tmp`, `/dev/shm` | private: size-capped tmpfs (bubblewrap 0.10+), else folders inside the workspace (count toward `max_workspace_mb`) | shared with your user | shared | writes denied (TMPDIR is inside the workspace) | shared |
+| other listening Unix sockets (`/var/lib/mysql/mysqld.sock`, LXD, `/opt/...`) | **masked**: every path socket listening when the run starts (from `/proc/net/unix`) is covered with `/dev/null`; sockets created later are not | **masked** (same) | reachable | denied by the profile | not applicable |
+| `/tmp`, `/dev/shm` | private: size-capped tmpfs (bubblewrap 0.10+), else folders inside the workspace (count toward `max_workspace_mb`; if the workspace itself is under `/tmp`, `/tmp` is a read-only tmpfs and `TMPDIR` points into the workspace) | shared with your user | shared | writes denied (TMPDIR is inside the workspace) | shared |
 | reading other system files (`/etc`, `/usr`, ...) | readable (read-only) | readable | readable | system libraries only | readable |
 | other processes visible / killable | no (new PID namespace) | no (new PID namespace) | yes | yes | yes |
 | CPU time | rlimit | rlimit | rlimit | rlimit | job object (whole job) |
 | memory | `RLIMIT_DATA` | `RLIMIT_DATA` | `RLIMIT_DATA` (+ cgroup `MemoryMax` when a `systemd --user` scope works) | **not enforced** (macOS ignores memory rlimits) | job object memory limit |
 | file size per file | `RLIMIT_FSIZE` | `RLIMIT_FSIZE` | `RLIMIT_FSIZE` | `RLIMIT_FSIZE` | **no** |
-| total workspace size | `max_workspace_mb` (2 GB) checked before and after every run | same | same | same | same |
+| total workspace size | `max_workspace_mb` (2 GB): a run does not start over it, and a watchdog measures the workspace about once a second during the run (less often for very large workspaces, at most ~10% of the time) and kills the run on a breach, so a run can overshoot by what it writes between two checks | same | same | same | same |
 | process count | `RLIMIT_NPROC` (your current count + 256) | same | same (+ cgroup `TasksMax`) | same | 64 per job |
 | open files | 512 | 512 | 512 | 512 | no |
-| wall clock + kill the whole tree, double-forked daemons included | **yes** (PID namespace dies with the run) | **yes** (PID namespace, `--kill-child`) | yes: the launcher is a child subreaper (or a `systemd --user` scope), see notes | session + descendant walk: a daemon that double-forks and detaches can survive | yes (job object, `taskkill /T` fallback) |
+| wall clock + kill the whole tree, double-forked daemons included | **yes** (PID namespace dies with the run) | **yes** (PID namespace, `--kill-child`) | mostly: subreaper launcher, descendants recorded every 100 ms, and an end-of-run sweep for the run's `JEV_RUN_ID` (a `systemd --user` scope when one works); see the notes for the remaining gap | descendants recorded every 100 ms + the `JEV_RUN_ID` sweep; no subreaper, see notes | yes (job object, `taskkill /T` fallback) |
 | scrubbed environment, `HOME` = workspace | yes | yes | yes | yes | yes |
 | FFmpeg / ffprobe for media tools | in the same sandbox | in the same sandbox | same process limits, plus: only plain media containers, no symlinks, no hard links | in the same sandbox | same process limits, plus the same input checks |
 
@@ -157,12 +161,18 @@ Notes, honestly:
   so code can use CUDA; CUDA needs only those device nodes and the driver libraries under `/usr`
   (NixOS: `/run/opengl-driver`, which is kept). GPU memory is not limited by the sandbox (long
   GPU jobs ask instead).
-* **Killing the process tree** without namespaces: the launcher stays as a Linux *child
-  subreaper*, so every process the program leaves behind, even after double-forking and
-  `setsid()`, is re-parented to it and killed when the run ends or is stopped. Remaining gap: a
-  process that forks at the very instant the launcher itself is killed can be re-parented to
-  `init` before the walk sees it. On macOS there is no subreaper: a daemon that double-forks and
-  detaches before the kill can survive.
+* **Killing the process tree** without namespaces ("Linux, neither"; macOS): on Linux the
+  launcher stays as a *child subreaper*, so every process the program leaves behind, even after
+  double-forking and `setsid()`, is re-parented to it and killed when the run ends or is stopped.
+  Because the program runs as your user it can also kill the launcher itself; so the backend
+  additionally records every descendant it sees (every 100 ms) and, when the run ends, kills
+  those still alive (PID and start time checked) and every process of your user whose
+  environment still carries the run's `JEV_RUN_ID`. **Remaining gap**, deliberate attacks only:
+  a program that, within one 100 ms interval, forks a child that calls `setsid()`, kills the
+  launcher and re-executes itself with an empty environment survives the run. A `systemd --user`
+  scope (cgroup), when one works, closes it. On macOS there is no subreaper; the 100 ms tracking
+  and the `JEV_RUN_ID` sweep apply, with the same gap. Both modes are weak sandboxes: every run
+  asks first.
 * **Windows** gets a Job Object (kill-on-close, a job-wide memory limit, CPU time, 64 processes)
   through `ctypes`; the child starts suspended and is resumed only after it is in the job. If the
   job cannot be created, or the process cannot be assigned to it, the run is **refused** and the
@@ -230,11 +240,12 @@ has not been run on a Mac by the maintainers, so `MACOS_PROFILE_VERIFIED = False
 | The capability report reflects a real probe | `Sandbox._detect`, `PROBE` | `test_jev_sandbox.py::test_capabilities_report_is_honest` |
 | Network is blocked (only `lo`, host loopback unreachable) when the report says "enforced" | `Sandbox._wrap` | `test_jev_sandbox.py::test_network_blocked_when_isolation_enforced` (skips where unavailable) |
 | bwrap: writes outside the workspace never land; home folder hidden | `_wrap_bwrap` | `test_bwrap_file_system_is_read_only_outside_workspace`, `test_bwrap_hides_home_folder` |
-| bwrap: Unix sockets under `/run` and `/var/run` are unreachable; vsock refused; WSL interop detected, reported, masked | `_wrap_bwrap`, `seccomp_program`, `wsl_info` | `test_jev_security_regressions.py::test_h4_unix_sockets_under_run_are_unreachable`, `test_h4_vsock_is_refused_inside_the_sandbox`, `test_h4_wsl_interop_detected_reported_and_masked` |
+| bwrap: Unix sockets under `/run` and `/var/run` are unreachable; vsock refused (also through io_uring); WSL interop detected, reported, masked | `_wrap_bwrap`, `seccomp_program`, `wsl_info` | `test_jev_security_regressions.py::test_h4_unix_sockets_under_run_are_unreachable`, `test_h4_vsock_is_refused_inside_the_sandbox`, `test_h4_wsl_interop_detected_reported_and_masked`, `test_jev_security_round2.py::test_n3_io_uring_cannot_open_vsock` |
+| bwrap and unshare: listening Unix sockets elsewhere (e.g. `/var/lib/mysql`) are masked | `listening_unix_sockets`, `_wrap_bwrap`, `PRELUDE` | `test_jev_security_round2.py::test_n5_listening_unix_sockets_outside_run_are_masked` |
 | A weak sandbox makes every code / FFmpeg tool ask, and settings cannot change that | `weak_sandbox` row, `ToolSpec.runs_code` | `test_m1_weak_sandbox_makes_every_code_and_ffmpeg_tool_ask`, `test_m1_none_mode_asyncio_exfiltration_now_asks` |
-| Sandboxed code cannot write `settings.json` or `jev.db` (bwrap, unshare) | `_protected`, `PRELUDE` | `test_m1_sandboxed_code_cannot_rewrite_settings_or_db` |
+| Sandboxed code cannot write `settings.json` or `jev.db` (bwrap, unshare), nor unmount what hides them (unshare: locked mounts, no capabilities) | `_protected`, `PRELUDE` | `test_m1_sandboxed_code_cannot_rewrite_settings_or_db`, `test_jev_security_round2.py::test_n4_unshare_code_cannot_unmount_the_jev_data_cover` |
 | Package venvs live in `jev-data`, are read-only for code runs, and a tampered or planted interpreter is never executed | `code.venv_dir`, `trusted_venv_python`, `install_package` | `test_h1_planted_workspace_venv_never_runs_and_venv_is_read_only`, `test_h1_code_runs_never_use_a_workspace_venv`, `test_h1_tampered_package_venv_is_not_trusted` |
-| Timeouts kill the whole tree; a double-forked `setsid()` daemon dies when the run ends | PID namespaces, `LAUNCHER` (subreaper), `_kill_tree` | `test_wall_timeout_kills_the_whole_tree` (bwrap, unshare, none), `test_m3_double_forked_setsid_daemon_dies_with_the_run`, `test_m3_daemon_dies_at_the_wall_clock_timeout_under_unshare` |
+| Timeouts kill the whole tree; a double-forked `setsid()` daemon dies when the run ends, also one that kills its launcher | PID namespaces, `LAUNCHER` (subreaper), `Sandbox._track`, `Sandbox._sweep` | `test_jev_security_round2.py::test_m3_child_that_kills_its_launcher_still_dies`, `test_wall_timeout_kills_the_whole_tree` (bwrap, unshare, none), `test_m3_double_forked_setsid_daemon_dies_with_the_run`, `test_m3_daemon_dies_at_the_wall_clock_timeout_under_unshare` |
 | `/tmp`, `/dev/shm` and the hiding tmpfs mounts are bounded; the workspace has a total size cap | `_wrap_bwrap`, `workspace_over` | `test_m4_tmp_shm_and_hidden_tmpfs_are_bounded`, `test_m4_workspace_size_cap` |
 | Windows: no run without its job object | `Sandbox.spawn`, `_WinJob.adopt` | `test_l4_windows_job_failures_refuse_the_run` |
 | A Node install whose prefix is (or contains) your home folder is not re-exposed whole | `_keep_paths` | `test_l5_node_prefix_that_is_or_contains_home_is_not_exposed` |
@@ -293,7 +304,9 @@ when it did not; the UI shows real tool calls and results from the event log, so
 environment; under network isolation the sandbox cannot reach the backend at all (it has its own
 loopback). Approving needs the SHA-256 of the pending call's arguments. Under bubblewrap and
 `unshare`, `jev-data` (`settings.json`, `jev.db`) is hidden from sandboxed code, so it cannot
-rewrite your approval rules; settings are validated on load and can never loosen a locked row.
+rewrite your approval rules (under `unshare` the covering mounts are locked by a second user
+namespace and the program has no capabilities, so it cannot unmount them); settings are
+validated on load and can never loosen a locked row.
 The policy refuses code that mentions the approvals API, the token, `jev-data`, `jev.db` or
 `/proc/*/environ`. Not enforced: **without isolation** (Windows, or Linux without namespaces), a
 program you approve runs as your user and could rewrite `settings.json` or read the backend's
@@ -311,7 +324,9 @@ time; at most 12 tool rounds per turn; tool results cut to about 4 000 character
 20 000 events kept per job (tokens beyond that are dropped, the final text is still in `done`);
 renders larger than 8K or 20 000 frames refused; renders estimated over 10 minutes ask; each
 workspace is capped at `limits.max_workspace_mb` (2 GB; a run does not start while the workspace
-is over it, and a run that pushes it over reports an error); `/tmp` and `/dev/shm` are bounded.
+is over it, and a watchdog checks it about once a second during a run and kills the run on a
+breach, so a fast writer can overshoot by roughly one second of writing); `/tmp` and `/dev/shm`
+are bounded.
 Not enforced: GPU memory, the total disk use of all conversations together, the number of
 conversations you start at once.
 
@@ -324,11 +339,25 @@ path on every request and refuse anything outside its workspace, symlinks includ
 served as `text/plain`, so the app never runs them in its own origin
 (`test_jev_api.py::test_chat_turn_artifacts_and_downloads`).
 
-**Special files.** Sandboxed code can create FIFOs, sockets and links in the workspace. Every
-place the backend opens a workspace file (reading, writing, uploads, artifact hashing and
-downloads, exports, images, media inputs) opens it with `O_NOFOLLOW | O_NONBLOCK` and refuses
-anything that is not a regular file, so a FIFO can never hang the backend
-(`test_l7_fifos_in_the_workspace_never_block_the_backend`).
+**Links and special files in the workspace.** Sandboxed code can create symlinks, FIFOs,
+sockets and hard links anywhere in its workspace between two tool calls, and the backend itself
+runs unsandboxed with your full rights. So every backend read and write under a workspace goes
+through one helper, `jev/wsfs.py`: the path is walked one folder at a time from the workspace
+with `O_DIRECTORY | O_NOFOLLOW` (relative to the folder's descriptor), so no component may be a
+link; the final file is opened `O_NOFOLLOW | O_NONBLOCK` and must be a regular file (a FIFO never
+blocks the backend); writes go to a new temporary file (`O_EXCL`) renamed over the target, so a
+link or FIFO planted at an output name is replaced, never written through. JEV's own scratch
+files (the code a run executes, speech text and audio, render and cut work folders, the footage
+feature cache) live in backend-owned storage outside the workspace (`jev-data/scratch`, hidden
+from the sandbox), and media / science outputs are produced there and then copied into the
+workspace through the helper. FFmpeg sees the workspace read-only; speech engines run in the
+sandbox on scratch files only. `tests/test_jev_security_round2.py::test_n1_no_raw_file_io_on_workspace_paths`
+fails if any module in `jev/` opens, reads, writes, creates or deletes a path any other way
+without a `# wsfs-ok: <reason>` comment saying why the path is not under a workspace (jev-data
+internals, the voices and models folders, files you pick yourself). Remaining: on Windows (no
+`dir_fd`) components are checked with `lstat` before opening, which leaves a race window; JEPA
+Studio's own training loaders (`jepa_train` reading a workspace image folder) are outside this
+helper. Tests: `test_n1_*`, `test_l7_fifos_in_the_workspace_never_block_the_backend`.
 
 **Models you import.** A GGUF file is checked for its magic bytes and its SHA-256 is recorded in
 `jev.db` (`models` table) and shown in the job's `done` event. JEV does not verify it against a
@@ -354,8 +383,10 @@ the next time it starts. Tool calls and their (truncated) results are in `tool_c
 
 * Export a conversation: `jev export <id>` or `GET /api/jev/conversations/<id>/export` (a zip:
   `conversation.json` with messages, turns, tool calls, approvals and artifact records, plus the
-  workspace files without `.venv`). Export zips are mode 0600 and only the 3 newest stay in
-  `jev-data/exports/`; `jev-data`, the workspaces and the exports folder are mode 0700.
+  workspace files without `.venv`). Export zips are mode 0600; `jev-data`, the workspaces and
+  the exports folder are mode 0700. The copies the app's download buttons leave in
+  `jev-data/exports/` (`*.app.zip`) are pruned to the 3 newest per conversation (and 3 for
+  "export everything"); exports you make with `jev export` are never deleted.
 * Delete a conversation (asks): its messages, tool calls, artifacts and workspace folder are
   removed; its audit rows stay with their arguments replaced by `{"redacted": ...}`.
 * Delete everything: remove `<root>/jev-data/`. Models live in Ollama's folder
@@ -382,16 +413,25 @@ run `ollama serve` instead.
   ask; obfuscated code can avoid it. The sandbox is the boundary.
 * Reading is not restricted outside the hidden folders: sandboxed code can read system files
   (`/etc`, `/usr`) everywhere, and anything your user can read where bubblewrap is unavailable.
-  Unix sockets outside `/run`, `/var/run`, `/tmp` and your home (for example under `/var/lib`)
-  stay reachable under bubblewrap; the network namespace does not cover filesystem sockets.
+  Unix sockets: under bubblewrap and `unshare` every path socket that is listening when a run
+  starts is masked; one that starts listening during the run (outside the hidden folders) is
+  reachable, because the network namespace does not cover filesystem sockets.
 * No cgroup limits except the `systemd --user` scope in "Linux, neither" mode: memory and process
   limits are per-process rlimits.
-* During an approved `install_package` run, pip and the packages' build scripts run with network
-  access and can write the conversation's package venv (that is what installing means); code
-  you install this way runs on every later code run in that conversation.
+* `install_package` runs `pip --isolated` (no user configuration, no `PIP_*` variables) with an
+  empty `HOME`, `PIP_CONFIG_FILE` set to the null device and `--index-url https://pypi.org/simple`,
+  so a `pip.conf`, `.netrc` or `.pydistutils.cfg` planted in the workspace is never read; the
+  cache is per conversation. By default it installs wheels only (`--only-binary :all:`), so no
+  package build code runs during the install; `build_from_source: true` (shown on the card)
+  allows source distributions, whose build code then runs with network access. Either way, what
+  you install runs on every later code run in that conversation (a wheel can contain a `.pth`
+  file that runs at interpreter start): approving an install trusts that package.
 * Approvals are per call; there is no approval for "everything a long-running program does after
   it starts" beyond the limits it runs under.
-* `jepa_embed_images` and `jepa_train` run inside the backend process (they use JEPA Studio's own
-  hash-checked loaders on workspace files), not in the subprocess sandbox; `text_to_speech`'s
-  speech engines (Piper, espeak-ng, `say`, SAPI) run outside it with fixed arguments and no
-  workspace inputs.
+* `jepa_embed_images` and `jepa_train` run inside the backend process (hash-checked weights; the
+  images are opened through `jev/wsfs.py` for `jepa_embed_images`, by JEPA Studio's own loaders for
+  `jepa_train`), not in the subprocess sandbox. `text_to_speech`'s engines (Piper CLI, espeak-ng,
+  SAPI) run in the sandbox on scratch files only (the text file and the WAV they write; the
+  workspace is not visible to them); the Piper Python package runs in the backend process on the
+  same scratch files; macOS `say` runs outside the sandbox (the deny-default profile blocks the
+  speech services it needs), with scratch input and output only.

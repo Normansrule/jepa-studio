@@ -337,7 +337,7 @@ def render(params: dict, out_dir: Path, progress: Callable[[float, str], None] |
     cancelled = cancelled or (lambda: False)
     p = normalize(params)
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)  # wsfs-ok: out_dir is backend scratch or _science
     try:
         return _render(p, out_dir, progress, cancelled)
     except Cancelled:
@@ -371,7 +371,7 @@ def _render(p, out_dir, progress, cancelled):
         timings["shade_s"] = time.perf_counter() - t1
         path = out_dir / f"{stem}.png"
         from PIL import Image
-        Image.fromarray(img).save(path, optimize=True)
+        Image.fromarray(img).save(path, optimize=True)  # wsfs-ok: out_dir is backend scratch or _science
         meta["trace"] = res.stats
         meta["exposure"] = expo
         outputs = [path]
@@ -415,7 +415,7 @@ def _render(p, out_dir, progress, cancelled):
             finally:
                 writer.close()
         except Cancelled:
-            path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)  # wsfs-ok: out_dir is backend scratch or _science
             raise
         meta["trace"] = res.stats if res is not None else {}
         meta["exposure"] = expo
@@ -425,7 +425,7 @@ def _render(p, out_dir, progress, cancelled):
     meta["timings"] = timings
     meta["device"] = p["device"]
     meta_path = out_dir / f"{path.stem}.json"
-    meta_path.write_text(json.dumps(meta, indent=2, default=float))
+    meta_path.write_text(json.dumps(meta, indent=2, default=float))  # wsfs-ok: out_dir is backend scratch or _science
     progress(1.0, "done")
     return outputs + [meta_path]
 

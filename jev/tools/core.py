@@ -13,7 +13,8 @@ import math
 import os
 from pathlib import Path
 
-from .base import ToolContext, ToolError, ToolResult, open_regular, tool
+from .. import wsfs
+from .base import ToolContext, ToolError, ToolResult, tool
 
 SKIP = {".jev", ".venv", ".tmp", "__pycache__", "node_modules", ".git"}
 EXT_KIND = {
@@ -84,7 +85,7 @@ def read_file(ctx: ToolContext, path: str, max_chars: int = 20000, offset: int =
     p = ctx.path(path)
     if not p.exists():
         raise ToolError(f"{path!r} is not a file in the workspace (use list_files)")
-    with open_regular(p, "rb") as f:            # refuses FIFOs/devices without blocking
+    with wsfs.open_file(ctx.workspace, p, "rb") as f:   # no link followed, no FIFO, never blocks
         size = os.fstat(f.fileno()).st_size
         f.seek(offset)
         raw = f.read(max_chars * 4)
@@ -179,9 +180,11 @@ def write_file(ctx: ToolContext, path: str, content: str, append: bool = False) 
     rel = p.relative_to(ctx.workspace.resolve())
     if rel.parts and rel.parts[0] in (".jev", ".venv"):
         raise ToolError("that folder is reserved for JEV's own bookkeeping")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open_regular(p, "a" if append else "w", encoding="utf-8", newline="") as f:
-        f.write(content)
+    if append:
+        with wsfs.open_file(ctx.workspace, p, "a", mkdirs=True, encoding="utf-8", newline="") as f:
+            f.write(content)
+    else:
+        wsfs.write_text(ctx.workspace, p, content)
     kind = artifact_kind(p)
     return ToolResult(True, f"{'Appended to' if append else 'Wrote'} {rel.as_posix()} ({_human(p.stat().st_size)}).",
                       artifacts=[ctx.artifact(p, kind=kind if kind != "other" else "text")])
@@ -246,7 +249,8 @@ def make_plot(ctx: ToolContext, kind: str, series: list, title: str = "", x_labe
         ax.legend()
     fig.tight_layout()
     out = ctx.path(filename)
-    fig.savefig(out, format="png")
+    with wsfs.atomic_writer(ctx.workspace, out) as fh:
+        fig.savefig(fh, format="png")
     return ToolResult(True, f"Saved {kind} chart to {filename}.", artifacts=[ctx.artifact(out, "image", title or filename)])
 
 
@@ -261,7 +265,7 @@ def summarize_file(ctx: ToolContext, path: str) -> ToolResult:
     p = ctx.path(path)
     if not p.exists():
         raise ToolError(f"{path!r} is not a file in the workspace")
-    with open_regular(p, "rb") as f:            # refuses FIFOs/devices without blocking
+    with wsfs.open_file(ctx.workspace, p, "rb") as f:   # no link followed, no FIFO, never blocks
         size = os.fstat(f.fileno()).st_size
         kind = artifact_kind(p)
         lines = [f"{path}: {_human(size)}, kind {kind}"]

@@ -216,13 +216,11 @@ def test_h2_ffprobe_runs_inside_the_sandbox(var_ws, monkeypatch):
     home_dir = Path(tempfile.mkdtemp(prefix="jev-home-marker-", dir=str(Path.home())))
     marker = home_dir / "marker.txt"
     marker.write_text("secret")
-    report = ws / "report.json"
-    fake = ws / "fake-ffprobe"
+    fake = ws / "fake-ffprobe"                   # reports what it can see through the container name
     fake.write_text(f"""#!{PY}
 import json, os, socket
-json.dump({{"ifs": sorted(n for _, n in socket.if_nameindex()), "marker": os.path.exists({str(marker)!r})}},
-          open({str(report)!r}, "w"))
-print(json.dumps({{"format": {{"duration": "1.0", "format_name": "mov"}}, "streams": [{{"codec_type": "video",
+rep = json.dumps({{"ifs": sorted(n for _, n in socket.if_nameindex()), "marker": os.path.exists({str(marker)!r})}})
+print(json.dumps({{"format": {{"duration": "1.0", "format_name": rep}}, "streams": [{{"codec_type": "video",
       "codec_name": "h264", "width": 64, "height": 48, "avg_frame_rate": "5/1"}}]}}))
 """)
     fake.chmod(0o755)
@@ -231,7 +229,7 @@ print(json.dumps({{"format": {{"duration": "1.0", "format_name": "mov"}}, "strea
         with F.use_sandbox(sb) if hasattr(F, "use_sandbox") else _nullcontext():
             info = F.probe(clip, ws, check=False)
         assert info.width == 64
-        got = json.loads(report.read_text())
+        got = json.loads(info.container)
         assert got["ifs"] == ["lo"] and got["marker"] is False, got
     finally:
         shutil.rmtree(home_dir, ignore_errors=True)
@@ -775,6 +773,7 @@ def test_l5_node_prefix_that_is_or_contains_home_is_not_exposed(tmp_path, monkey
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setattr(S.shutil, "which", lambda n: str(node) if n == "node" else None)
     sb = Sandbox({"sandbox": {"isolation": "bwrap", "hide_home": True}})
+    (tmp_path / "ws").mkdir()
     for prefix_case in ("is home", "contains home"):
         if prefix_case == "contains home":
             node = tmp_path / "home" / "node"                    # prefix tmp_path contains home
@@ -806,7 +805,7 @@ def test_l6_private_permissions_and_bounded_exports(tmp_path):
         for p in (Path(s["data_dir"]), Path(s["workspace_root"]), ws):
             assert stat.S_IMODE(p.stat().st_mode) == 0o700, p
         exports = Path(s["data_dir"]) / "exports"
-        outs = [rt.store.export_conversation(c["id"], exports) for _ in range(5)]
+        outs = [rt.store.export_conversation(c["id"], exports, prune=True) for _ in range(5)]
         for o in outs[-3:]:
             assert o.exists() and stat.S_IMODE(o.stat().st_mode) == 0o600
         assert len(list(exports.glob("*.zip"))) == 3 and stat.S_IMODE(exports.stat().st_mode) == 0o700
@@ -816,7 +815,7 @@ def test_l6_private_permissions_and_bounded_exports(tmp_path):
 
 # ================================================================================================ L7
 def test_l7_fifos_in_the_workspace_never_block_the_backend(tmp_path):
-    from jev.api import HttpError, JevApi
+    from jev.api import JevApi
     from jev.llm import MockLLM
     if not hasattr(os, "mkfifo"):
         pytest.skip("no FIFOs here")
@@ -826,14 +825,19 @@ def test_l7_fifos_in_the_workspace_never_block_the_backend(tmp_path):
     os.mkfifo(ws / "f.txt")
     os.mkfifo(ws / "g.png")
     ctx = ToolContext(workspace=ws, settings={})
-    for tool, args in (("write_file", {"path": "f.txt", "content": "x"}), ("read_file", {"path": "f.txt"}),
-                       ("summarize_file", {"path": "f.txt"}), ("summarize_file", {"path": "g.png"})):
+    for tool, args in (("read_file", {"path": "f.txt"}), ("summarize_file", {"path": "f.txt"}),
+                       ("summarize_file", {"path": "g.png"})):
         exc = _no_hang(lambda tool=tool, args=args: REGISTRY[tool].fn(ctx, **args))
         assert isinstance(exc, ToolError), (tool, exc)
+    # writes replace the FIFO with a regular file (atomic rename, jev/wsfs.py), never open it
+    exc = _no_hang(lambda: REGISTRY["write_file"].fn(ctx, path="f.txt", content="x"))
+    assert exc is None and stat.S_ISREG(os.lstat(ws / "f.txt").st_mode)
+    os.mkfifo(ws / "u.txt")
     exc = _no_hang(lambda: api.handle("POST", ["conversations", c["id"], "files"], {},
-                                      {"name": "f.txt", "content_base64": base64.b64encode(b"x").decode()}))
-    assert isinstance(exc, HttpError) and exc.status == 400
-    exc = _no_hang(lambda: api.rt.store.add_artifact(ws, ws / "f.txt", "text", "text/plain"))
+                                      {"name": "u.txt", "content_base64": base64.b64encode(b"x").decode()}))
+    assert exc is None and (ws / "u.txt").read_bytes() == b"x"
+    os.mkfifo(ws / "v.txt")
+    exc = _no_hang(lambda: api.rt.store.add_artifact(ws, ws / "v.txt", "text", "text/plain"))
     assert isinstance(exc, PermissionError)
     exc = _no_hang(lambda: api.rt.store.export_conversation(c["id"], tmp_path / "exp"))
     assert exc is None

@@ -20,7 +20,7 @@ from urllib.parse import unquote
 from . import __version__
 from .agent import Runtime, artifact_json, register_artifacts
 from .llm import OllamaError, OllamaUnavailable, sha256_file
-from .policy import GPU_MAX_MINUTES, Decision, check_path, describe_rules
+from .policy import GPU_MAX_MINUTES, Decision, canonical_args, check_path, describe_rules
 from .settings import SettingsError
 from .tools.base import REGISTRY, ToolResult, describe
 
@@ -238,7 +238,8 @@ class JevApi:
             rt.store.update_approval(aid, job_id=jid)
             return {"approval_id": aid, "status": "auto_run", **({"job_id": jid} if jid else {})}
         a = rt.broker.request(kind, tool, args, reason, "approve", rules, on_approve=start)
-        return {"approval_id": a.id, "status": "pending"}
+        return {"approval_id": a.id, "status": "pending", "args": args, "args_canonical": canonical_args(args),
+                "args_sha256": a.args_sha256}
 
     def _approval_json(self, row: dict) -> dict:
         live = self.rt.broker.get(row["id"])
@@ -247,6 +248,7 @@ class JevApi:
                                        "decided", "remember")}
         if live is not None:              # the exact, uncut arguments of a call that is still pending
             out["args"], out["args_sha256"] = live.args, live.args_sha256
+            out["args_canonical"] = canonical_args(live.args)
         return out | {"job_id": (live.job_id if live else None) or row.get("job_id")}
 
     def model_pull(self, body: dict) -> dict:
@@ -349,7 +351,8 @@ class JevApi:
     def export_all(self) -> FileResponse:
         rt = self.rt
         out = rt.store.export_all(Path(rt.settings.resolved()["data_dir"]) / "exports",
-                                  {"file": rt.settings.file, "effective": rt.settings.public(), "paths": self.paths()})
+                                  {"file": rt.settings.file, "effective": rt.settings.public(), "paths": self.paths()},
+                                  prune=True)
         return FileResponse(out, "application/zip", out.name, "attachment")
 
     def data_delete(self, body: dict) -> dict:
@@ -374,7 +377,7 @@ class JevApi:
             rt.store.delete_all(keep_audit_log=keep, before=before)
             exports = Path(rt.settings.resolved()["data_dir"]) / "exports"
             if exports.is_dir() and not exports.is_symlink():
-                shutil.rmtree(exports, ignore_errors=True)
+                shutil.rmtree(exports, ignore_errors=True)  # wsfs-ok: jev-data/exports, backend-owned
             return None
         what = (f"Delete all of JEV's data: {n_conv} conversation(s) with their messages and workspace files, "
                 "science renders, exports, imported-model records" + ("" if keep else " and the audit log") +
@@ -384,7 +387,8 @@ class JevApi:
                            "data_dir": str(Path(rt.settings.resolved()["data_dir"]))}, what, start)
 
     def conversation_export(self, cid: str) -> FileResponse:
-        out = self.rt.store.export_conversation(cid, Path(self.rt.settings.resolved()["data_dir"]) / "exports")
+        out = self.rt.store.export_conversation(cid, Path(self.rt.settings.resolved()["data_dir"]) / "exports",
+                                                prune=True)
         return FileResponse(out, "application/zip", out.name, "attachment")
 
     def add_file(self, cid: str, body: dict) -> dict:
@@ -396,12 +400,12 @@ class JevApi:
         if not isinstance(name, str) or not name or (why := check_path(name, ws)):
             raise HttpError(400, f"name must be a relative path inside the workspace ({name!r}"
                                  f"{': ' + why if isinstance(name, str) and name else ''})")
+        from . import wsfs
         from .tools.base import NotRegularFile, open_regular
 
         dest = (ws / name.replace("\\", "/")).resolve()
         if dest.relative_to(ws).parts[0] in (".jev", ".venv"):
             raise HttpError(400, "that folder is reserved")
-        dest.parent.mkdir(parents=True, exist_ok=True)
         b64 = body.get("content_base64", body.get("data_base64"))
         try:
             if b64 is not None:
@@ -409,8 +413,7 @@ class JevApi:
                     data = base64.b64decode(b64, validate=True)
                 except (ValueError, TypeError) as e:
                     raise HttpError(400, "content_base64 is not valid base64") from e
-                with open_regular(dest, "wb") as fh:     # never blocks on a FIFO planted in the workspace
-                    fh.write(data)
+                wsfs.write_bytes(ws, dest, data)         # no link followed, a FIFO is replaced, never opened
             elif "from_path" in body:
                 src = Path(str(body["from_path"])).expanduser().resolve()
                 allowed = self.studio.allowed if self.studio is not None else []
@@ -420,11 +423,11 @@ class JevApi:
                     raise HttpError(404, "from_path is not a file")
                 if src.stat().st_size > rt.settings.resolved()["limits"]["max_file_mb"] << 20:
                     raise HttpError(413, "file larger than limits.max_file_mb")
-                with open_regular(src, "rb") as fi, open_regular(dest, "wb") as fo:
+                with open_regular(src, "rb") as fi, wsfs.atomic_writer(ws, dest) as fo:
                     shutil.copyfileobj(fi, fo, 1 << 20)
             else:
                 raise HttpError(400, "send content_base64 (or data_base64) or from_path")
-        except NotRegularFile as e:
+        except (NotRegularFile, wsfs.UnsafePath) as e:
             raise HttpError(400, str(e)) from e
         from .tools.core import artifact_kind
         k = artifact_kind(dest)
@@ -476,7 +479,7 @@ class JevApi:
 
         def work(job):
             out = root / "_science" / job.id
-            out.mkdir(parents=True, exist_ok=True)
+            out.mkdir(parents=True, exist_ok=True)  # wsfs-ok: backend-owned workspace_root/_science job folder
             job.emit("start", action=what, kind=body.get("kind"))
 
             def prog(f, m=""):

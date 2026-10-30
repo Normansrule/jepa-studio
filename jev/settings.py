@@ -148,7 +148,7 @@ def private_dir(path: str | Path) -> Path:
     """mkdir -p with mode 0700 (and tighten an existing folder JEV owns to 0700): JEV's data,
     workspaces and exports are readable by you only."""
     p = Path(path)
-    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)  # wsfs-ok: jev-data folders
     if os.name != "nt":
         try:
             if not p.is_symlink() and stat.S_IMODE(p.stat().st_mode) & 0o077:
@@ -161,10 +161,10 @@ def private_dir(path: str | Path) -> Path:
 def _write_private(path: Path, text: str) -> None:
     private_dir(path.parent)
     tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # wsfs-ok: jev-data/settings.json
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
-    os.replace(tmp, path)
+    os.replace(tmp, path)  # wsfs-ok: jev-data/settings.json
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -185,7 +185,7 @@ class Settings:
 
     def load(self) -> None:
         if self.path.exists():
-            raw = self.path.read_text(encoding="utf-8")
+            raw = self.path.read_text(encoding="utf-8")  # wsfs-ok: jev-data/settings.json
             if len(raw) > 1_000_000:
                 raise SettingsError("settings.json larger than 1 MB; refusing to parse")
             data = json.loads(raw or "{}")
@@ -222,7 +222,7 @@ class Settings:
     @property
     def workspace_root(self) -> Path:
         p = Path(self.resolved()["workspace_root"])
-        p.mkdir(parents=True, exist_ok=True)
+        p.mkdir(parents=True, exist_ok=True)  # wsfs-ok: workspace_root (jev-data)
         return p
 
     def update(self, patch: dict, api: bool = True) -> dict:

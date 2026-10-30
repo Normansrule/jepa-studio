@@ -70,8 +70,9 @@ def test_fake_espeak_ng_used(isolated):
     r = T.synthesize("hello there", "b.wav", ws, settings=settings)
     assert r.backend == "espeak-ng" and not r.silent
     assert abs(r.duration_s - 1.5) < 0.01
-    called = (ws / "b.wav.called").read_text()
+    called = " ".join(r.command)
     assert "-f" in called and "hello" not in called      # text goes through a file, never argv
+    assert str(ws) not in called                         # the engine never sees the workspace (backend scratch)
 
 
 def test_espeak_legacy_then_say_on_macos(isolated, monkeypatch):
@@ -90,7 +91,7 @@ def test_sapi_on_windows(isolated, monkeypatch):
     monkeypatch.setattr(T, "_powershell", lambda: str(ps))   # shutil.which follows PATHEXT rules on win32
     r = T.synthesize("hello windows", "e.wav", ws, settings=settings)
     assert r.backend == "sapi"
-    called = (ws / "e.wav.called").read_text()
+    called = " ".join(r.command)
     assert "-File" in called and "hello" not in called
 
 
@@ -115,7 +116,7 @@ def test_piper_preferred_when_voice_installed(isolated):
     _voice(settings)
     r = T.synthesize("hello", "g.wav", ws, settings=settings)
     assert r.backend == "piper" and r.voice == "en_US-test-medium"
-    assert "-m" in (ws / "g.wav.called").read_text()
+    assert "-m" in r.command
 
 
 def test_piper_voice_checksum_mismatch_falls_back(isolated):

@@ -55,15 +55,15 @@ def main(argv: list[str] | None = None) -> dict:
     args = ap.parse_args(argv)
     size = (1280, 720) if args.resolution == "720p" else (1920, 1080)
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)  # wsfs-ok: demo CLI writes to the folder you name
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
         r = make_explainer(SCENES, "demo_explainer.mp4", ws, size=size, fps=24, crossfade=0.4, crf=args.crf,
                            preset="slow", tts_backend=args.tts, rate=1.05)
-        shutil.copy(r["video"], out / "demo_explainer.mp4")
-        shutil.copy(r["srt"], out / "demo_explainer.srt")
-        sb = json.loads(r["storyboard"].read_text())
-    render_slide(SCENES[1]["visual"]["slide"], (960, 540)).save(out / "demo_explainer_poster.png", optimize=True)
+        shutil.copy(r["video"], out / "demo_explainer.mp4")  # wsfs-ok: demo CLI output folder
+        shutil.copy(r["srt"], out / "demo_explainer.srt")  # wsfs-ok: demo CLI output folder
+        sb = json.loads(r["storyboard"].read_text())  # wsfs-ok: demo CLI output folder
+    render_slide(SCENES[1]["visual"]["slide"], (960, 540)).save(out / "demo_explainer_poster.png", optimize=True)  # wsfs-ok: demo CLI output folder
     summary = {"duration_s": round(r["duration_s"], 2), "tts": r["tts_backends"], "captions": r["caption_mode"],
                "bytes": (out / "demo_explainer.mp4").stat().st_size, "size": list(size),
                "render_seconds": sb["render_seconds"]}

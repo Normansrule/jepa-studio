@@ -245,7 +245,7 @@ class Ollama:
                          cancelled: CancelCb | None = None, sha256: str | None = None) -> str:
         """Upload a local GGUF to Ollama's blob store and register it as `name`. Returns its SHA-256."""
         p = Path(gguf_path).resolve()
-        with open(p, "rb") as f:
+        with open(p, "rb") as f:  # wsfs-ok: a GGUF file you chose (granted folder / CLI path), not a workspace
             if f.read(4) != b"GGUF":
                 raise OllamaError(f"{p.name} is not a GGUF file (missing GGUF magic bytes)")
         digest = sha256 or sha256_file(p)
@@ -257,7 +257,7 @@ class Ollama:
             exists = False
         if not exists:
             size = p.stat().st_size
-            with open(p, "rb") as f:
+            with open(p, "rb") as f:  # wsfs-ok: a GGUF file you chose (granted folder / CLI path), not a workspace
                 self._open("POST", blob, raw=f, length=size, timeout=3600,
                            headers={"Content-Type": "application/octet-stream"}).close()
         body = {"model": name, "files": {p.name: f"sha256:{digest}"}, "stream": True}

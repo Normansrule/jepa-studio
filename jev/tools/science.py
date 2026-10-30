@@ -81,10 +81,12 @@ def _black_hole_needs_approval(args: dict, ctx: ToolContext) -> str | None:
     return None
 
 
-def _outputs(ctx: ToolContext, folder: str) -> Path:
-    out = ctx.path(folder)
-    out.mkdir(parents=True, exist_ok=True)
-    return out
+def _publish(ctx: ToolContext, paths: list, folder: str) -> list[Path]:
+    """Renders are made in backend-owned scratch, then copied into the workspace without following
+    links (jev/wsfs.py): the renderers' own writers (imageio, matplotlib) never see a workspace path."""
+    from jev import wsfs
+    dest = ctx.path(folder)
+    return [wsfs.publish(ctx.workspace, dest / Path(p).name, p) for p in paths]
 
 
 @tool(name="render_black_hole",
@@ -100,12 +102,15 @@ def render_black_hole(ctx: ToolContext, **params) -> ToolResult:
         blackhole.normalize(params)
     except ValueError as e:
         raise ToolError(str(e)) from e
-    out = _outputs(ctx, "science")
-    paths = blackhole.render(params, out, ctx.progress, ctx.cancelled)
-    if not paths:
-        return ToolResult(False, "The render was cancelled.")
+    from jev import wsfs
+    with wsfs.use_scratch(ctx.scratch()):
+        out = wsfs.new_scratch("render-")
+        paths = blackhole.render(params, out, ctx.progress, ctx.cancelled)
+        if not paths:
+            return ToolResult(False, "The render was cancelled.")
+        meta = json.loads(wsfs.read_text(out, paths[-1]))
+        paths = _publish(ctx, paths, "science")
     media, meta_path = paths[0], paths[-1]
-    meta = json.loads(meta_path.read_text())
     pp, phys = meta["params"], meta["physics"]
     kind = "image" if media.suffix == ".png" else "video"
     what = "image" if kind == "image" else f"{pp['frames']}-frame {pp['animation']} video"
@@ -174,14 +179,17 @@ def _sim_needs_approval(args: dict, ctx: ToolContext) -> str | None:
       parameters=SIM_PARAMS, risk="sandbox", category="science", needs_approval=_sim_needs_approval)
 def simulate_physics(ctx: ToolContext, kind: str, **params) -> ToolResult:
     from jev.science import sims
-    out = _outputs(ctx, "science")
-    try:
-        paths = sims.run(kind, params, out, ctx.progress, ctx.cancelled)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-    if not paths:
-        return ToolResult(False, "The simulation was cancelled.")
-    metrics = json.loads(paths[-1].read_text())
+    from jev import wsfs
+    with wsfs.use_scratch(ctx.scratch()):
+        out = wsfs.new_scratch("sim-")
+        try:
+            paths = sims.run(kind, params, out, ctx.progress, ctx.cancelled)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        if not paths:
+            return ToolResult(False, "The simulation was cancelled.")
+        metrics = json.loads(wsfs.read_text(out, paths[-1]))
+        paths = _publish(ctx, paths, "science")
     keys = [k for k in ("energy_rel_drift_max", "energy_rel_variation_max", "cfl_number", "figure8_return_error",
                         "position_error_max", "period_rel_error", "lyapunov_estimate_per_s", "lyapunov_estimate",
                         "precession_per_orbit_rad", "precession_orbit_equation_rad", "separation_growth")

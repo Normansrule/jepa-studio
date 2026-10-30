@@ -31,7 +31,9 @@ from typing import Callable
 
 import numpy as np
 
-from .common import MediaError, inside
+from jev import wsfs
+
+from .common import MediaError, out_inside
 
 BACKENDS = ("piper", "espeak-ng", "espeak", "say", "sapi", "silent")
 MAX_TEXT_CHARS = 20_000
@@ -66,6 +68,7 @@ class TTSResult:
     silent: bool = False
     voice: str | None = None
     notes: list[str] = field(default_factory=list)
+    command: list[str] = field(default_factory=list)      # the engine command that produced the audio
 
     def to_json(self) -> dict:
         return {"path": str(self.path), "backend": self.backend, "duration_s": round(self.duration_s, 3),
@@ -86,7 +89,7 @@ def voices_dir(settings: dict | None = None) -> Path:
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open(path, "rb") as f:  # wsfs-ok: the voices folder (yours, outside any workspace)
         while b := f.read(1 << 20):
             h.update(b)
     return h.hexdigest()
@@ -94,7 +97,7 @@ def _sha256(path: Path) -> str:
 
 def _manifest(vdir: Path) -> dict:
     try:
-        return json.loads((vdir / MANIFEST).read_text())
+        return json.loads((vdir / MANIFEST).read_text())  # wsfs-ok: the voices folder (yours, outside any workspace)
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -170,20 +173,21 @@ def available_backends(settings: dict | None = None) -> list[dict]:
     return out
 
 
-def wav_duration(path: Path) -> tuple[float, int]:
+def wav_duration(path: Path, root: Path | None = None) -> tuple[float, int]:
+    root = Path(root) if root is not None else Path(path).parent
     try:
-        with wave.open(str(path), "rb") as w:
+        with wsfs.open_file(root, path, "rb") as fh, wave.open(fh, "rb") as w:
             return w.getnframes() / float(w.getframerate()), w.getframerate()
     except (wave.Error, EOFError, OSError):
         from . import ffmpeg as F
 
-        info = F.probe(path, path.parent, kind="audio", check=False)
+        info = F.probe(path, root, kind="audio", check=False)
         return float(info.duration_s), int(info.audio_rate or 0)
 
 
-def write_silence(path: Path, seconds: float, rate: int = SILENT_RATE) -> None:
+def write_silence(path: Path, seconds: float, rate: int = SILENT_RATE, root: Path | None = None) -> None:
     n = max(1, int(round(seconds * rate)))
-    with wave.open(str(path), "wb") as w:
+    with wsfs.atomic_writer(root if root is not None else Path(path).parent, path) as fh, wave.open(fh, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
@@ -203,42 +207,66 @@ def clean_text(text: str) -> str:
     return text
 
 
-def _run(cmd: list[str], timeout: float, stdin: str | None = None) -> None:
-    r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout,
-                       encoding="utf-8", errors="replace")
-    if r.returncode != 0:
-        raise MediaError(f"{Path(cmd[0]).name} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+def _run(cmd: list[str], timeout: float, work: Path, stdin: str | None = None, ro=()) -> None:
+    """Run a speech engine inside the sandbox: its workspace is this call's scratch folder (the text
+    file and the WAV it writes), the engine and its voice are visible read-only, no network. macOS
+    `say` needs the GUI speech services, which the deny-default profile blocks, so there it runs
+    outside the sandbox (its input and output are backend scratch files, never workspace paths)."""
+    from jev.sandbox import Limits as RunLimits
+    from jev.sandbox import Mounts
+
+    from .ffmpeg import current_sandbox
+    sb = current_sandbox()
+    if Path(cmd[0]).name == "say" and sb.capabilities()["method"] == "sandbox-exec":
+        r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            raise MediaError(f"say failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        return
+    exe = Path(cmd[0]).resolve()
+    mounts = Mounts(ro=[exe.parent, *[Path(p).resolve() for p in ro]])
+    lim = RunLimits(cpu_seconds=int(timeout) + 30, memory_mb=max(sb.limits.memory_mb, 2048),
+                    wall_seconds=int(timeout), max_output_mb=max(sb.limits.max_output_mb, 1024),
+                    max_file_mb=sb.limits.max_file_mb, max_workspace_mb=max(sb.limits.max_workspace_mb, 4096))
+    res = sb.run(cmd, work, lim, network=False, stdin_text=stdin, mounts=mounts, honor_network_setting=False)
+    if not res.ok:
+        raise MediaError(f"{exe.name} failed: {res.summary(600)}")
 
 
-def _piper(text: str, out: Path, voice: Path, timeout: float, rate: float) -> None:
+def _piper(text: str, out: Path, voice: Path, timeout: float, rate: float, work: Path) -> list[str]:
     exe = _which("piper")
     length_scale = f"{1.0 / max(0.5, min(2.0, rate)):.3f}"
     if exe:
-        _run([exe, "-m", str(voice), "-f", str(out), "--length_scale", length_scale], timeout, stdin=text + "\n")
-        return
+        cmd = [exe, "-m", str(voice), "-f", str(out), "--length_scale", length_scale]
+        _run(cmd, timeout, work, stdin=text + "\n", ro=[voice.parent])
+        return cmd
     from piper import PiperVoice  # type: ignore[import-not-found]
 
     pv = PiperVoice.load(str(voice))
-    with wave.open(str(out), "wb") as wf:
+    with wsfs.atomic_writer(work, out) as fh, wave.open(fh, "wb") as wf:
         if hasattr(pv, "synthesize_wav"):          # piper-tts >= 1.3
             pv.synthesize_wav(text, wf)
         else:                                      # piper-tts 1.2
             pv.synthesize(text, wf, length_scale=float(length_scale))
+    return ["piper-tts (Python package)", str(voice)]
 
 
-def _espeak(exe: str, text_file: Path, out: Path, voice: str | None, timeout: float, rate: float) -> None:
+def _espeak(exe: str, text_file: Path, out: Path, voice: str | None, timeout: float, rate: float,
+            work: Path) -> list[str]:
     cmd = [exe, "-s", str(int(165 * rate)), "-w", str(out), "-f", str(text_file)]
     if voice and re.fullmatch(r"[A-Za-z0-9_+\-]+", voice):
         cmd[1:1] = ["-v", voice]
-    _run(cmd, timeout)
+    _run(cmd, timeout, work)
+    return cmd
 
 
-def _say(text_file: Path, out: Path, voice: str | None, timeout: float, rate: float) -> None:
-    cmd = ["say", "-r", str(int(180 * rate)), "-o", str(out), "--file-format=WAVE", "--data-format=LEI16@22050",
-           "-f", str(text_file)]
+def _say(text_file: Path, out: Path, voice: str | None, timeout: float, rate: float, work: Path) -> list[str]:
+    cmd = [_which("say") or "say", "-r", str(int(180 * rate)), "-o", str(out), "--file-format=WAVE",
+           "--data-format=LEI16@22050", "-f", str(text_file)]
     if voice and re.fullmatch(r"[A-Za-z0-9 _\-()]+", voice):
         cmd[1:1] = ["-v", voice]
-    _run(cmd, timeout)
+    _run(cmd, timeout, work)
+    return cmd
 
 
 _SAPI_PS1 = r"""param([string]$TextPath, [string]$WavPath, [int]$Rate)
@@ -251,12 +279,13 @@ $s.Dispose()
 """
 
 
-def _sapi(ps: str, text_file: Path, out: Path, tmp: Path, timeout: float, rate: float) -> None:
-    script = tmp / "jev_sapi.ps1"
-    script.write_text(_SAPI_PS1, encoding="utf-8")
+def _sapi(ps: str, text_file: Path, out: Path, work: Path, timeout: float, rate: float) -> list[str]:
+    script = wsfs.write_text(work, "jev_sapi.ps1", _SAPI_PS1)
     sapi_rate = str(int(max(-10, min(10, round((rate - 1.0) * 10)))))
-    _run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
-          str(text_file), str(out), sapi_rate], timeout)
+    cmd = [ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+           str(text_file), str(out), sapi_rate]
+    _run(cmd, timeout, work)
+    return cmd
 
 
 def synthesize(text: str, out_wav: str | Path, workspace: str | Path, *, backend: str = "auto",
@@ -264,77 +293,95 @@ def synthesize(text: str, out_wav: str | Path, workspace: str | Path, *, backend
                timeout: float = 600.0) -> TTSResult:
     """Speak `text` into `out_wav` (inside the workspace) with the first backend that works.
 
+    The text file and the engine's output live in backend-owned scratch (never in the workspace,
+    where sandboxed code could have planted links or FIFOs); engines run in the sandbox; the WAV is
+    then copied into the workspace without following links (jev/wsfs.py).
+
     backend: "auto" or one of BACKENDS (a named backend that is unavailable falls through to the
     rest of the chain, and the notes say so). voice: a Piper voice name, an espeak voice
     (e.g. "en-us"), or a macOS voice name, depending on the backend used."""
     if backend != "auto" and backend not in BACKENDS:
         raise MediaError(f"unknown speech backend {backend!r}; choose one of {', '.join(BACKENDS)}")
     ws = Path(workspace).resolve()
-    out = inside(out_wav, ws)
+    out = out_inside(out_wav, ws)
     if out.suffix.lower() != ".wav":
         out = out.with_suffix(".wav")
-    out.parent.mkdir(parents=True, exist_ok=True)
     text = clean_text(text)
+    with wsfs.ensure_scratch():
+        work = wsfs.new_scratch("tts-")
+        try:
+            r = _synthesize(text, work, backend, voice, rate, settings, timeout)
+            if wsfs.in_scratch(out):
+                wsfs.publish(wsfs.root_of(out), out, r.path)
+            else:
+                try:
+                    wsfs.publish(ws, out, r.path)
+                except wsfs.UnsafePath as e:
+                    raise MediaError(str(e)) from e
+            r.path = out
+            return r
+        finally:
+            wsfs.drop_scratch(work)
+
+
+def _synthesize(text: str, work: Path, backend: str, voice: str | None, rate: float, settings: dict | None,
+                timeout: float) -> TTSResult:
+    tmp_out = work / "speech.wav"
     notes: list[str] = []
     if not text:
-        write_silence(out, 0.5)
-        return TTSResult(out, "silent", 0.5, SILENT_RATE, True, None, ["empty text"])
-    tmp = out.parent / ".jev_tts"
-    tmp.mkdir(exist_ok=True)
-    text_file = tmp / (out.stem + ".txt")
-    text_file.write_text(text, encoding="utf-8")
+        write_silence(tmp_out, 0.5, root=work)
+        return TTSResult(tmp_out, "silent", 0.5, SILENT_RATE, True, None, ["empty text"])
+    text_file = wsfs.write_text(work, "speech.txt", text)
     order = list(BACKENDS) if backend == "auto" else [backend] + [b for b in BACKENDS if b != backend]
-    try:
-        for b in order:
-            try:
-                if b == "piper":
-                    if not (_which("piper") or PIPER_PYTHON):
-                        notes.append("piper: not installed")
-                        continue
-                    v = find_voice(voice if voice and _VOICE_RE.match(voice) else None, settings)
-                    if v is None:
-                        notes.append(f"piper: no voice model in {voices_dir(settings)} (see download_voice)")
-                        continue
-                    _piper(text, out, v, timeout, rate)
-                    used_voice = v.stem
-                elif b in ("espeak-ng", "espeak"):
-                    exe = _which(b)
-                    if not exe:
-                        notes.append(f"{b}: not found")
-                        continue
-                    ev = voice if voice and not _VOICE_RE.match(voice) else None
-                    _espeak(exe, text_file, out, ev, timeout, rate)
-                    used_voice = ev or "default"
-                elif b == "say":
-                    if sys.platform != "darwin" or not _which("say"):
-                        continue
-                    _say(text_file, out, voice, timeout, rate)
-                    used_voice = voice or "system default"
-                elif b == "sapi":
-                    ps = _powershell()
-                    if not ps:
-                        continue
-                    _sapi(ps, text_file, out, tmp, timeout, rate)
-                    used_voice = "system default"
-                else:
-                    secs = estimate_seconds(text) / max(0.5, rate)
-                    write_silence(out, secs)
-                    notes.append("no speech engine available: wrote a silent track of the estimated speaking "
-                                 "time; the narration is carried by captions")
-                    return TTSResult(out, "silent", secs, SILENT_RATE, True, None, notes)
-                if not out.is_file() or out.stat().st_size < 64:
-                    notes.append(f"{b}: produced no audio")
+    for b in order:
+        try:
+            wsfs.unlink(work, tmp_out)
+            if b == "piper":
+                if not (_which("piper") or PIPER_PYTHON):
+                    notes.append("piper: not installed")
                     continue
-                dur, sr = wav_duration(out)
-                if dur <= 0:
-                    notes.append(f"{b}: produced empty audio")
+                v = find_voice(voice if voice and _VOICE_RE.match(voice) else None, settings)
+                if v is None:
+                    notes.append(f"piper: no voice model in {voices_dir(settings)} (see download_voice)")
                     continue
-                return TTSResult(out, b, dur, sr, False, used_voice, notes)
-            except (MediaError, OSError, subprocess.TimeoutExpired, ImportError) as e:
-                notes.append(f"{b}: {str(e)[:200]}")
+                cmd = _piper(text, tmp_out, v, timeout, rate, work)
+                used_voice = v.stem
+            elif b in ("espeak-ng", "espeak"):
+                exe = _which(b)
+                if not exe:
+                    notes.append(f"{b}: not found")
+                    continue
+                ev = voice if voice and not _VOICE_RE.match(voice) else None
+                cmd = _espeak(exe, text_file, tmp_out, ev, timeout, rate, work)
+                used_voice = ev or "default"
+            elif b == "say":
+                if sys.platform != "darwin" or not _which("say"):
+                    continue
+                cmd = _say(text_file, tmp_out, voice, timeout, rate, work)
+                used_voice = voice or "system default"
+            elif b == "sapi":
+                ps = _powershell()
+                if not ps:
+                    continue
+                cmd = _sapi(ps, text_file, tmp_out, work, timeout, rate)
+                used_voice = "system default"
+            else:
+                secs = estimate_seconds(text) / max(0.5, rate)
+                write_silence(tmp_out, secs, root=work)
+                notes.append("no speech engine available: wrote a silent track of the estimated speaking "
+                             "time; the narration is carried by captions")
+                return TTSResult(tmp_out, "silent", secs, SILENT_RATE, True, None, notes)
+            if not wsfs.is_regular(work, tmp_out) or tmp_out.stat().st_size < 64:
+                notes.append(f"{b}: produced no audio")
                 continue
-    finally:
-        text_file.unlink(missing_ok=True)
+            dur, sr = wav_duration(tmp_out, work)
+            if dur <= 0:
+                notes.append(f"{b}: produced empty audio")
+                continue
+            return TTSResult(tmp_out, b, dur, sr, False, used_voice, notes, cmd)
+        except (MediaError, OSError, subprocess.TimeoutExpired, ImportError) as e:
+            notes.append(f"{b}: {str(e)[:200]}")
+            continue
     raise MediaError("speech synthesis failed: " + "; ".join(notes))  # unreachable: silent always works
 
 
@@ -381,7 +428,7 @@ def download_voice(name: str, settings: dict | None = None, *, fetch: Callable[.
     fetch = fetch or _fetch_https
     files = voice_urls(name)
     vdir = voices_dir(settings)
-    vdir.mkdir(parents=True, exist_ok=True)
+    vdir.mkdir(parents=True, exist_ok=True)  # wsfs-ok: the voices folder (yours, outside any workspace)
     index = json.loads(fetch(f"{PIPER_REPO}/voices.json", 20 << 20).decode("utf-8"))
     entry = index.get(name)
     if not entry:
@@ -401,12 +448,12 @@ def download_voice(name: str, settings: dict | None = None, *, fetch: Callable[.
         if "md5_digest" in meta and hashlib.md5(data).hexdigest() != meta["md5_digest"]:  # noqa: S324 - integrity vs index
             raise MediaError(f"{fname}: MD5 does not match voices.json; not saved")
         tmp = vdir / (".part-" + fname)
-        tmp.write_bytes(data)
-        os.replace(tmp, vdir / fname)
+        tmp.write_bytes(data)  # wsfs-ok: the voices folder (yours, outside any workspace)
+        os.replace(tmp, vdir / fname)  # wsfs-ok: the voices folder, outside any workspace
         sha = hashlib.sha256(data).hexdigest()
         man[fname] = {"sha256": sha, "bytes": len(data), "source": f"{PIPER_REPO}/{rel}"}
         saved[fname] = sha
-    (vdir / MANIFEST).write_text(json.dumps(man, indent=2, sort_keys=True))
+    (vdir / MANIFEST).write_text(json.dumps(man, indent=2, sort_keys=True))  # wsfs-ok: the voices folder (yours, outside any workspace)
     if progress:
         progress(1.0, "voice ready")
     return {"voice": name, "folder": str(vdir), "files": saved}

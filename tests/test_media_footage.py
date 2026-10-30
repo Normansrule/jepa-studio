@@ -58,11 +58,13 @@ def test_shot_boundaries_histogram(ws):
     for got, want in zip(boundaries(a), [SEG, 2 * SEG]):
         assert abs(got - want) <= 2
     assert np.allclose(np.linalg.norm(a.features, axis=1), 1, atol=1e-4)
-    # second call is served from the cache in the workspace (npz, no pickle)
+    # second call is served from the cache (npz, no pickle), kept in backend-owned storage outside the workspace
+    from jev import wsfs
     b = FT.analyze("clip.mp4", ws)
     c = FT.analyze("clip.mp4", ws)
     assert boundaries(b) == boundaries(c) == boundaries(a)
-    assert list((ws / ".jev_media_cache").glob("*.npz"))
+    assert list(wsfs.cache_dir("media-cache").glob("*.npz"))
+    assert not (ws / ".jev_media_cache").exists()
 
 
 def test_subsampled_analysis_still_finds_cuts(ws):

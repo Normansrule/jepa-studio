@@ -534,15 +534,21 @@ def edit_image(im: Image.Image, ops: list[dict], th: str | Theme = "dark") -> Im
 
 
 def load_image(path: str | Path, workspace: str | Path, limits: Limits | None = None) -> Image.Image:
-    return open_image_safely(inside(path, workspace), limits)
+    return open_image_safely(inside(path, workspace), limits, root=Path(workspace).resolve())
 
 
-def save_png(im: Image.Image, out: Path, meta: dict[str, Any] | None = None) -> Path:
+def save_png(im: Image.Image, out: Path, meta: dict[str, Any] | None = None, root: Path | None = None) -> Path:
+    """Save a PNG under `root` (the workspace or a scratch folder) without following links."""
     from PIL.PngImagePlugin import PngInfo
 
+    from jev import wsfs
     info = PngInfo()
     for k, v in (meta or {}).items():
         info.add_text(str(k), str(v)[:2000])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    im.save(out, format="PNG", pnginfo=info, optimize=False)
+    if root is None:
+        try:
+            root = wsfs.root_of(out)
+        except wsfs.UnsafePath:
+            root = Path(out).parent
+    wsfs.save_image(im, root, out, format="PNG", pnginfo=info, optimize=False)
     return out

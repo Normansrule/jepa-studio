@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import shlex
@@ -23,6 +24,7 @@ import sys
 import threading
 from pathlib import Path
 
+from .. import wsfs
 from ..policy import flag, scan_node, scan_python, scan_shell
 from ..sandbox import DATA_DIRNAME, IS_WIN, Limits, Mounts, Sandbox, python_for, sandbox_for, trusted_venv_python
 from .base import ToolContext, ToolError, ToolResult, tool
@@ -65,15 +67,25 @@ def _venv_for_run(ctx: ToolContext) -> tuple[Path | None, str]:
     return v, ""
 
 
-def pip_argv(ctx: ToolContext, packages: list) -> list[str]:
-    """The exact pip command install_package runs (shown on the approval card)."""
+def pip_argv(ctx: ToolContext, packages: list, build_from_source: bool = False) -> list[str]:
+    """The exact pip command install_package runs (shown on the approval card). --isolated: pip
+    reads no user configuration and no PIP_* variables (HOME is also an empty folder and
+    PIP_CONFIG_FILE is the null device, so a pip.conf, .netrc or .pydistutils.cfg planted in the
+    workspace is never read); --only-binary :all: installs wheels only, so no package's own build
+    code runs, unless build_from_source; a per-conversation cache."""
     try:
         v = venv_dir(ctx)
     except ToolError:
         v = Path("<jev-data>") / "venvs" / ctx.workspace.name
     exe = v / ("Scripts/python.exe" if IS_WIN else "bin/python")
-    return [str(exe), "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check", "--",
-            *[str(p) for p in packages]]
+    argv = [str(exe), "-I", "-m", "pip", "--isolated", "install", "--no-input", "--disable-pip-version-check",
+            "--index-url", "https://pypi.org/simple", "--cache-dir", str(v.parent / f"{v.name}.pip-cache")]
+    if not build_from_source:
+        argv += ["--only-binary", ":all:"]
+    cert = os.environ.get("PIP_CERT")
+    if cert and os.path.isfile(cert):
+        argv += ["--cert", cert]                      # your own CA bundle (PIP_CERT is ignored under --isolated)
+    return argv + ["--", *[str(p) for p in packages]]
 
 
 def _limits(ctx: ToolContext, timeout_s: int | None = None) -> Limits:
@@ -94,12 +106,11 @@ def _isolated(ctx: ToolContext) -> bool:
     return get_sandbox(ctx).capabilities().get("network_isolation") == "enforced"
 
 
-def _snippet(ctx: ToolContext, code: str, suffix: str) -> Path:
-    d = ctx.workspace / ".jev" / "runs"
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"run-{secrets.token_hex(4)}{suffix}"
-    p.write_text(code, encoding="utf-8")
-    return p
+def _snippet(code: str, suffix: str) -> Path:
+    """The program text, in backend-owned scratch (never in the workspace, where a planted link
+    could redirect the write); the run sees it read-only. Call inside wsfs.use_scratch()."""
+    d = wsfs.new_scratch("run-")
+    return wsfs.write_text(d, f"run-{secrets.token_hex(4)}{suffix}", code)
 
 
 def _result(ctx: ToolContext, res, label: str, note: str = "") -> ToolResult:
@@ -136,14 +147,16 @@ def _python_needs(args: dict, ctx: ToolContext) -> str | None:
           "timeout_s": {"type": "integer", "minimum": 1, "maximum": 86400}}, "required": ["code"]},
       risk="sandbox", category="code", needs_approval=_python_needs, runs_code=True)
 def run_python(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolResult:
-    script = _snippet(ctx, code, ".py")
     ws = str(ctx.workspace.resolve())
     boot = ("import sys, runpy; sys.path.insert(0, sys.argv[1]); sys.argv = [sys.argv[2]]; "
             "runpy.run_path(sys.argv[0], run_name='__main__')")
     venv, note = _venv_for_run(ctx)
-    argv = [python_for(venv=venv), "-I", "-c", boot, ws, str(script)]
-    res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
-                               cancelled=ctx.cancelled, venv=venv, mounts=Mounts(ro=[venv] if venv else []))
+    with wsfs.use_scratch(ctx.scratch()):
+        script = _snippet(code, ".py")
+        argv = [python_for(venv=venv), "-I", "-c", boot, ws, str(script)]
+        res = get_sandbox(ctx).run(argv, ctx.workspace, _limits(ctx, timeout_s), network=_network_ok(ctx),
+                                   cancelled=ctx.cancelled, venv=venv,
+                                   mounts=Mounts(ro=[script.parent] + ([venv] if venv else [])))
     return _result(ctx, res, "python", note)
 
 
@@ -164,9 +177,13 @@ def run_node(ctx: ToolContext, code: str, timeout_s: int | None = None) -> ToolR
     if not node:
         raise ToolError("Node.js is not installed. Install it from https://nodejs.org (LTS) or use run_python.")
     esm = bool(re.search(r"^\s*(import|export)\s", code, re.M)) and "require(" not in code
-    script = _snippet(ctx, code, ".mjs" if esm else ".cjs")
-    res = get_sandbox(ctx).run([node, str(script)], ctx.workspace, _limits(ctx, timeout_s),
-                               network=_network_ok(ctx), cancelled=ctx.cancelled)
+    ws = ctx.workspace.resolve()
+    with wsfs.use_scratch(ctx.scratch()):
+        script = _snippet(code, ".mjs" if esm else ".cjs")
+        res = get_sandbox(ctx).run([node, str(script)], ctx.workspace, _limits(ctx, timeout_s),
+                                   network=_network_ok(ctx), cancelled=ctx.cancelled,
+                                   extra_env={"NODE_PATH": str(ws / "node_modules")},
+                                   mounts=Mounts(ro=[script.parent]))
     return _result(ctx, res, "node")
 
 
@@ -205,13 +222,18 @@ def run_shell(ctx: ToolContext, command: str, shell: str = "auto", timeout_s: in
 # ------------------------------------------------------------------------------------- install_package
 def _install_needs(args: dict, ctx: ToolContext) -> str | None:
     pk = [str(p) for p in args.get("packages") or []]
+    build = bool(args.get("build_from_source"))
     try:
         where = str(venv_dir(ctx))
     except ToolError:
         where = "jev-data/venvs"
-    return flag("install", f"pip install {', '.join(pk)} into this conversation's package venv ({where}); exact "
-                           f"command: {shlex.join(pip_argv(ctx, pk))}") + "\n" + \
-        flag("network", "downloads from the Python Package Index (pypi.org); only the venv and pip's cache are "
+    text = (f"pip install {', '.join(pk)} into this conversation's package venv ({where}); exact command: "
+            f"{shlex.join(pip_argv(ctx, pk, build))}")
+    text += ("; BUILDS FROM SOURCE: the packages' own build code runs during the install, with network access"
+             if build else "; wheels only (no package build code runs during the install)")
+    return flag("install", text) + "\n" + \
+        flag("network", "downloads from the Python Package Index (pypi.org) only: pip ignores every configuration "
+                        "file and variable a program could have planted; only the venv and its pip cache are "
                         "writable during the install, the workspace is read-only")
 
 
@@ -220,9 +242,13 @@ def _install_needs(args: dict, ctx: ToolContext) -> str | None:
                   "(kept in jev-data, outside the workspace; run_python then uses it). ALWAYS asks the user first.",
       parameters={"type": "object", "properties": {
           "packages": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
-          "manager": {"enum": ["pip"]}}, "required": ["packages"]},
+          "manager": {"enum": ["pip"]},
+          "build_from_source": {"type": "boolean", "description": "allow source distributions (runs their build "
+                                                                  "code); default false: wheels only"}},
+          "required": ["packages"]},
       risk="approve", category="code", needs_approval=_install_needs, runs_code=True)
-def install_package(ctx: ToolContext, packages: list, manager: str = "pip") -> ToolResult:
+def install_package(ctx: ToolContext, packages: list, manager: str = "pip",
+                    build_from_source: bool = False) -> ToolResult:
     from ..settings import private_dir
 
     bad = [p for p in packages if not PKG_RE.match(p)]
@@ -234,28 +260,34 @@ def install_package(ctx: ToolContext, packages: list, manager: str = "pip") -> T
                     "cpu_seconds": max(base.cpu_seconds, 600)})
     venv = venv_dir(ctx)
     root = private_dir(venv.parent)
-    cache = private_dir(root / "pip-cache")
+    cache = private_dir(root / f"{venv.name}.pip-cache")
     tmp = private_dir(root / f"{venv.name}.tmp")
+    home = private_dir(root / f"{venv.name}.home")          # an empty HOME: no planted config is ever read
+    for leftover in list(home.iterdir()):
+        wsfs.rmtree(home, leftover.name)
     log = []
     if venv.exists() and trusted_venv_python(venv) is None:
-        shutil.rmtree(venv, ignore_errors=True)
+        shutil.rmtree(venv, ignore_errors=True)  # wsfs-ok: the venv lives in jev-data, not in a workspace
         log.append("the existing package venv failed its integrity check (its interpreter or pyvenv.cfg had "
                    "changed), so it was deleted and created again")
     if not venv.exists():
         private_dir(venv)
         # the trusted interpreter (this Python, never a file from the workspace) creates the venv
         res = sb.run([sys.executable, "-I", "-m", "venv", "--system-site-packages", str(venv)], ctx.workspace, lim,
-                     cancelled=ctx.cancelled, mounts=Mounts(rw=[venv, tmp], workspace_writable=False), tmp=tmp,
-                     honor_network_setting=False)
+                     cancelled=ctx.cancelled, mounts=Mounts(rw=[venv, tmp, home], workspace_writable=False), tmp=tmp,
+                     honor_network_setting=False, extra_env={"HOME": str(home), "XDG_CONFIG_HOME": str(home),
+                                                             "PIP_CONFIG_FILE": os.devnull})
         if not res.ok:
             return ToolResult(False, "could not create the package venv: " + res.summary())
         log.append(f"created the package venv {venv} (sees this computer's packages; installs go into it)")
     if trusted_venv_python(venv) is None:
         return ToolResult(False, f"refused: {venv} does not hold this Python's interpreter; nothing was installed")
-    argv = pip_argv(ctx, packages)
+    argv = pip_argv(ctx, packages, build_from_source)
     res = sb.run(argv, ctx.workspace, lim, network=True, cancelled=ctx.cancelled, venv=venv, tmp=tmp,
-                 mounts=Mounts(rw=[venv, cache, tmp], workspace_writable=False),
-                 extra_env={"PIP_CACHE_DIR": str(cache), "PIP_NO_INPUT": "1"})
+                 mounts=Mounts(rw=[venv, cache, tmp, home], workspace_writable=False),
+                 extra_env={"HOME": str(home), "USERPROFILE": str(home), "XDG_CONFIG_HOME": str(home),
+                            "XDG_CACHE_HOME": str(home), "PIP_CONFIG_FILE": os.devnull, "PYTHONNOUSERSITE": "1",
+                            "NETRC": os.devnull})
     log.append("$ " + shlex.join(argv))
     log.append(res.summary(2500))
     return ToolResult(res.ok, "\n".join(log), data={"packages": packages, "venv": str(venv)})
@@ -301,16 +333,13 @@ def create_project(ctx: ToolContext, name: str, template: str = "python", descri
     slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-") or "project"
     written = []
     for rel, body in TEMPLATES[template].items():
-        p = ctx.path(f"{name}/{rel}")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body.format(name=name, slug=slug, description=description or name), encoding="utf-8")
+        wsfs.write_text(ctx.workspace, ctx.path(f"{name}/{rel}"),
+                        body.format(name=name, slug=slug, description=description or name))
         written.append(rel)
     for rel, body in (files or {}).items():
         if not isinstance(body, str):
             raise ToolError(f"files[{rel!r}] must be text")
-        p = ctx.path(f"{name}/{rel}")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body, encoding="utf-8")
+        wsfs.write_text(ctx.workspace, ctx.path(f"{name}/{rel}"), body)
         written.append(rel)
     return ToolResult(True, f"Created {name}/ ({template}): " + ", ".join(written),
                       artifacts=[ctx.artifact(ctx.path(f"{name}/{w}"), "code" if artifact_kind(Path(w)) == "code"
@@ -331,6 +360,26 @@ def _run_dir(ctx: ToolContext, run_id: str) -> Path:
     return d
 
 
+def _load_ws_image(ws: Path, path: Path, max_side: int):
+    """jepa_studio.data.loaders.load_image, but opened through jev/wsfs.py: no link followed, a FIFO
+    named *.png never blocks the backend."""
+    import numpy as np
+    from PIL import Image
+
+    from jepa_studio.data.loaders import MAX_FILE_BYTES, MAX_PIXELS
+    with wsfs.open_file(ws, path, "rb") as fh:
+        if os.fstat(fh.fileno()).st_size > MAX_FILE_BYTES:
+            raise ToolError(f"{path.name}: larger than {MAX_FILE_BYTES >> 20} MB")
+        with Image.open(fh) as im:
+            w, h = im.size
+            if w * h > MAX_PIXELS:
+                raise ToolError(f"{path.name}: {w}x{h} exceeds the pixel cap")
+            im.draft("RGB", (max_side, max_side))
+            im = im.convert("RGB")
+            im.thumbnail((max_side, max_side), Image.Resampling.BICUBIC)
+            return np.asarray(im, dtype=np.float32) / 255.0
+
+
 @tool(name="jepa_embed_images",
       description="Embed the images in a workspace folder with the encoder of a trained JEPA Studio run (read-only use "
                   "of its hash-verified weights). Saves embeddings.npy and nearest-neighbour pairs to the workspace.",
@@ -345,7 +394,7 @@ def jepa_embed_images(ctx: ToolContext, run_id: str, folder: str = ".", max_imag
     import torch.nn.functional as F
 
     from jepa_studio.config import load_config
-    from jepa_studio.data.loaders import IMAGE_EXT, load_image, safe_listing
+    from jepa_studio.data.loaders import IMAGE_EXT, safe_listing
     from jepa_studio.evaluate import embed
     from jepa_studio.models import build_encoder
     from jepa_studio.weights import WeightError, load_run_weights
@@ -369,7 +418,7 @@ def jepa_embed_images(ctx: ToolContext, run_id: str, folder: str = ".", max_imag
         if ctx.cancelled():
             raise ToolError("cancelled")
         try:
-            a = load_image(p, max(2 * size, 64))
+            a = _load_ws_image(ctx.workspace, p, max(2 * size, 64))
         except Exception as e:  # noqa: BLE001
             ctx.log(f"skipped {p.name}: {e}")
             continue
@@ -380,13 +429,15 @@ def jepa_embed_images(ctx: ToolContext, run_id: str, folder: str = ".", max_imag
     e, _ = embed(model.eval(), torch.stack(xs))
     e = F.normalize(e, dim=1)
     out = ctx.path("embeddings.npy")
-    np.save(out, e.numpy())
+    with wsfs.atomic_writer(ctx.workspace, out) as fh:
+        np.save(fh, e.numpy())
     sim = e @ e.T
     sim.fill_diagonal_(-2)
     nn = sim.argmax(1).tolist()
     pairs = [{"image": names[i], "nearest": names[j], "cosine": round(float(sim[i, j]), 4)} for i, j in enumerate(nn)]
     nn_path = ctx.path("neighbors.json")
-    nn_path.write_text(json.dumps({"run_id": run_id, "weights_verified": verified, "pairs": pairs}, indent=2))
+    wsfs.write_text(ctx.workspace, nn_path, json.dumps({"run_id": run_id, "weights_verified": verified,
+                                                        "pairs": pairs}, indent=2))
     lines = [f"{p['image']} ~ {p['nearest']} ({p['cosine']})" for p in pairs[:10]]
     return ToolResult(True, f"Embedded {len(names)} images with {run_id} ({e.shape[1]}-dim, weights "
                             f"{'hash-verified' if verified else 'UNVERIFIED (no recorded hash)'}). Nearest pairs:\n" +

@@ -21,6 +21,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from jev import wsfs
+
 from .common import Limits, MediaError, font, inside, open_image_safely
 from .images import Theme, chart, diagram, equation, fit_image, line_height, rgb, theme, wrap
 
@@ -229,7 +231,7 @@ def _image(c: _Canvas, s: dict, workspace: Path | None, limits: Limits) -> None:
         raise MediaError("an image slide needs a path")
     if workspace is None:
         raise MediaError("image slides need a workspace to read from")
-    src = open_image_safely(inside(s["path"], workspace), limits)
+    src = open_image_safely(inside(s["path"], workspace), limits, root=Path(workspace).resolve())
     mode = s.get("fit", "fit")
     if mode == "cover" and not s.get("title"):
         c.im.paste(fit_image(src, (c.W, c.H), "cover", c.t.bg))
@@ -323,7 +325,7 @@ def render_deck(slides: list[dict], out_dir: str | Path, workspace: str | Path, 
         raise MediaError("at most 200 slides per deck")
     ws = Path(workspace).resolve()
     out = inside(out_dir, ws)
-    out.mkdir(parents=True, exist_ok=True)
+    wsfs.makedirs(ws, out)
     pngs, ims = [], []
     for i, s in enumerate(slides, 1):
         if cancelled and cancelled():
@@ -333,7 +335,7 @@ def render_deck(slides: list[dict], out_dir: str | Path, workspace: str | Path, 
             spec["number"] = f"{i} / {len(slides)}"
         im = render_slide(spec, size, th, ws)
         p = out / f"slide_{i:02d}.png"
-        im.save(p, format="PNG")
+        wsfs.save_image(im, ws, p, format="PNG")
         pngs.append(p)
         if pdf:
             ims.append(im)
@@ -342,5 +344,6 @@ def render_deck(slides: list[dict], out_dir: str | Path, workspace: str | Path, 
     pdf_path = None
     if pdf and ims:
         pdf_path = out / "slides.pdf"
-        ims[0].save(pdf_path, format="PDF", save_all=True, append_images=ims[1:], resolution=144.0)
+        with wsfs.atomic_writer(ws, pdf_path) as fh:
+            ims[0].save(fh, format="PDF", save_all=True, append_images=ims[1:], resolution=144.0)
     return {"pngs": pngs, "pdf": pdf_path, "size": size}

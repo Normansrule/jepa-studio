@@ -43,32 +43,35 @@ def _is_regular(p: Path) -> bool:
         return False
 
 
-def _zip_regular(z: zipfile.ZipFile, p: Path, arcname: str) -> None:
-    """Add one workspace file without following links or blocking on FIFOs."""
-    from .tools.base import NotRegularFile, open_regular
+def _zip_regular(z: zipfile.ZipFile, ws: Path, p: Path, arcname: str) -> None:
+    """Add one workspace file without following links or blocking on FIFOs (jev/wsfs.py)."""
+    from . import wsfs
     try:
-        with open_regular(p, "rb") as fh:
-            st = os.fstat(fh.fileno())
+        with wsfs.open_file(ws, p, "rb") as fh:
             zi = zipfile.ZipInfo.from_file(p, arcname)
-            zi.file_size = st.st_size
+            zi.file_size = os.fstat(fh.fileno()).st_size
             zi.compress_type = zipfile.ZIP_DEFLATED
             with z.open(zi, "w") as out:
                 shutil.copyfileobj(fh, out, 1 << 20)
-    except (NotRegularFile, OSError):
+    except (OSError, wsfs.UnsafePath):
         pass
 
 
-def _finish_export(out: Path, keep: int | None = None) -> Path:
-    """0600 on the new zip; only the newest `keep` export zips stay in the folder."""
+def _finish_export(out: Path, prune_prefix: str | None = None, keep: int | None = None) -> Path:
+    """0600 on the new zip. With prune_prefix (the copies the app's download buttons leave behind,
+    named *.app.zip), only the newest `keep` of that same kind stay; exports you make yourself
+    (`jev export`) are never deleted."""
     try:
         os.chmod(out, 0o600)
     except OSError:
         pass
-    keep = KEEP_EXPORTS if keep is None else keep
-    zips = sorted((z for z in out.parent.glob("*.zip") if _is_regular(z)), key=lambda z: z.stat().st_mtime)
-    for old in zips[:-keep] if len(zips) > keep else []:
-        if old != out:
-            old.unlink(missing_ok=True)
+    if prune_prefix:
+        keep = KEEP_EXPORTS if keep is None else keep
+        zips = sorted((z for z in out.parent.glob(f"{prune_prefix}*.app.zip") if _is_regular(z)),
+                      key=lambda z: z.stat().st_mtime)
+        for old in zips[:-keep] if len(zips) > keep else []:
+            if old != out:
+                old.unlink(missing_ok=True)  # wsfs-ok: jev-data/exports
     return out
 
 MIGRATIONS: list[str] = [
@@ -131,7 +134,7 @@ class Store:
         self.workspace_root = Path(workspace_root).resolve()
         _private_dir(self.path.parent)
         if not self.path.exists():
-            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))
+            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))  # wsfs-ok: jev-data/jev.db
         self.lock = threading.RLock()
         self.db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30)
         self.db.row_factory = sqlite3.Row
@@ -280,6 +283,18 @@ class Store:
             raise PermissionError(f"artifact {p} is outside its workspace")
         if not _is_regular(p):
             raise PermissionError(f"artifact {p.name} is not a regular file")
+        if sha256 is None:
+            import hashlib
+
+            from . import wsfs
+            h = hashlib.sha256()
+            try:
+                with wsfs.open_file(ws, p, "rb") as fh:          # no link followed, never blocks on a FIFO
+                    while chunk := fh.read(1 << 20):
+                        h.update(chunk)
+            except wsfs.UnsafePath as e:
+                raise PermissionError(str(e)) from e
+            sha256 = h.hexdigest()
         aid = "f-" + secrets.token_hex(8)
         rel_ws = ws.relative_to(self.workspace_root).as_posix()
         self._x("INSERT INTO artifacts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -333,13 +348,13 @@ class Store:
         return {"format": "jev-conversation/1", "conversation": c, "turns": turns, "messages": self.messages(cid, 100000),
                 "tool_calls": calls, "approvals": appr, "artifacts": self.list_artifacts(cid)}
 
-    def export_conversation(self, cid: str, out_dir: str | Path) -> Path:
+    def export_conversation(self, cid: str, out_dir: str | Path, prune: bool = False) -> Path:
         """Write <out_dir>/<cid>-<time>.zip with conversation.json and every workspace file."""
         data = self.conversation_json(cid)
         ws = self.workspace(cid)
         out_dir = _private_dir(Path(out_dir))
-        out = out_dir / f"{cid}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.zip"
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        out = out_dir / f"{cid}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}{'.app' if prune else ''}.zip"
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # wsfs-ok: jev-data/exports
         with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("conversation.json", json.dumps(data, indent=2, default=str))
             for dirpath, dirnames, filenames in os.walk(ws):
@@ -348,8 +363,8 @@ class Store:
                 for fn in filenames:
                     p = Path(dirpath) / fn
                     if _is_regular(p):
-                        _zip_regular(z, p, "files/" + p.relative_to(ws).as_posix())
-        return _finish_export(out)
+                        _zip_regular(z, ws, p, "files/" + p.relative_to(ws).as_posix())
+        return _finish_export(out, f"{cid}-" if prune else None)
 
     def delete_conversation(self, cid: str) -> None:
         c = self.get_conversation(cid)
@@ -369,7 +384,7 @@ class Store:
                 self.db.execute("ROLLBACK")
                 raise
         if ws.exists() and self.workspace_root in ws.parents:
-            shutil.rmtree(ws, ignore_errors=True)
+            shutil.rmtree(ws, ignore_errors=True)  # wsfs-ok: the resolved workspace folder itself; rmtree never follows links
 
     # ------------------------------------------------------------------ everything at once
     def _workspace_dirs(self) -> list[tuple[str, Path]]:
@@ -383,7 +398,7 @@ class Store:
                 out.append((p.relative_to(self.workspace_root).as_posix(), p))
         return out
 
-    def export_all(self, out_dir: str | Path, settings: dict | None = None) -> Path:
+    def export_all(self, out_dir: str | Path, settings: dict | None = None, prune: bool = False) -> Path:
         """Write <out_dir>/jev-data-<time>.zip: `jev-data.json` (every conversation with its turns,
         messages, tool calls and artifacts; the whole audit log; imported models; the settings) and
         `workspaces/<folder>/...` (every workspace file, without .venv / caches / symlinks)."""
@@ -393,8 +408,8 @@ class Store:
                 "approvals": [_row(r) for r in self._x("SELECT * FROM approvals ORDER BY created").fetchall()],
                 "models": self.list_models(), "settings": settings or {}}
         out_dir = _private_dir(Path(out_dir))
-        out = out_dir / f"jev-data-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.zip"
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        out = out_dir / f"jev-data-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}{'.app' if prune else ''}.zip"
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # wsfs-ok: jev-data/exports
         with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("jev-data.json", json.dumps(data, indent=2, default=str))
             for name, ws in self._workspace_dirs():
@@ -404,8 +419,8 @@ class Store:
                     for fn in filenames:
                         p = Path(dirpath) / fn
                         if _is_regular(p):
-                            _zip_regular(z, p, f"workspaces/{name}/" + p.relative_to(ws).as_posix())
-        return _finish_export(out)
+                            _zip_regular(z, ws, p, f"workspaces/{name}/" + p.relative_to(ws).as_posix())
+        return _finish_export(out, "jev-data-" if prune else None)
 
     def delete_all(self, keep_audit_log: bool = False, before: float | None = None) -> dict:
         """Delete every conversation (rows and workspace folders), the science outputs, the imported-model
@@ -437,6 +452,6 @@ class Store:
             except sqlite3.Error:
                 pass
         for _, p in dirs:
-            shutil.rmtree(p, ignore_errors=True)
+            shutil.rmtree(p, ignore_errors=True)  # wsfs-ok: resolved workspace folders; rmtree never follows links
         counts["workspaces"] = len(dirs)
         return counts

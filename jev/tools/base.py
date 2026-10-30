@@ -105,6 +105,21 @@ class ToolContext:
             raise ToolError(f"{relative!r} is outside this conversation's workspace")
         return p
 
+    def out_path(self, relative: str) -> Path:
+        """A path JEV is about to (re)write: the folder must resolve inside the workspace; a link or
+        special file already at the final name is replaced by the write (jev/wsfs.py), never followed."""
+        rel = Path(str(relative).replace("\\", "/"))
+        if not rel.name or rel.name in (".", ".."):
+            raise ToolError(f"{relative!r} is not a file name")
+        parent = self.path(str(rel.parent) if str(rel.parent) else ".")
+        return parent / rel.name
+
+    def scratch(self) -> Path:
+        """Backend-owned scratch storage for this conversation (jev-data/scratch/<workspace>), outside
+        the workspace: JEV's own temporary files never live where sandboxed code can plant links."""
+        from jev.wsfs import scratch_base_for
+        return scratch_base_for(self.settings, self.workspace)
+
     def artifact(self, path: Path, kind: ArtifactKind, title: str = "", **meta) -> Artifact:
         path = Path(path).resolve()
         if self.workspace.resolve() not in path.parents:
@@ -166,7 +181,7 @@ class NotRegularFile(ToolError):
 
 def _regular_fd(path, flags: int, mode: int = 0o600) -> int:
     try:
-        fd = os.open(path, flags | _NOFOLLOW | _NONBLOCK | _BINARY | _CLOEXEC, mode)
+        fd = os.open(path, flags | _NOFOLLOW | _NONBLOCK | _BINARY | _CLOEXEC, mode)  # wsfs-ok: the no-follow primitive
     except OSError as e:
         import errno
         if e.errno in (errno.ELOOP, errno.ENXIO, errno.EISDIR, errno.EWOULDBLOCK, errno.EMLINK):

@@ -25,6 +25,8 @@ from jev.media import tts as T
 from jev.media import video as V
 import functools
 
+from jev import wsfs
+
 from jev.media.common import Limits, MediaError, open_image_safely
 from jev.sandbox import sandbox_for
 from jev.tools.base import ToolContext, ToolResult
@@ -42,7 +44,7 @@ def tool(name: str, **kw):
     def wrap(fn):
         @functools.wraps(fn)
         def in_sandbox(ctx: ToolContext, *a, **k):
-            with F.use_sandbox(sandbox_for(ctx.settings)):
+            with F.use_sandbox(sandbox_for(ctx.settings)), wsfs.use_scratch(ctx.scratch()):
                 return fn(ctx, *a, **k)
         return _tool(name, runs_code=name in RUNS_FFMPEG, **kw)(in_sandbox)
     return wrap
@@ -56,10 +58,10 @@ def _limits(ctx: ToolContext) -> Limits:
 
 
 def _out(ctx: ToolContext, rel: str | None, default: str, suffix: str) -> Path:
-    p = ctx.path(rel or default)
+    p = ctx.out_path(rel or default)
     if p.suffix.lower() != suffix:
         p = p.with_suffix(suffix)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    wsfs.makedirs(ctx.workspace, p.parent)
     return p
 
 
@@ -222,17 +224,18 @@ def make_image(ctx: ToolContext, kind: str, spec: dict, output: str | None = Non
         paths = spec.get("images") or []
         if not paths or len(paths) > 200:
             raise MediaError("contact_sheet needs 1..200 image paths")
-        ims = [open_image_safely(ctx.path(p), lim) for p in paths]
+        ims = [open_image_safely(ctx.path(p), lim, root=ctx.workspace) for p in paths]
         im = I.contact_sheet(ims, int(spec.get("cols", 4)), int(spec.get("thumb_width", 320)), spec.get("labels"),
                              theme)
     elif kind == "edit":
         if not spec.get("path"):
             raise MediaError("edit needs spec.path")
-        im = I.edit_image(open_image_safely(ctx.path(spec["path"]), lim), spec.get("ops") or [], theme)
+        im = I.edit_image(open_image_safely(ctx.path(spec["path"]), lim, root=ctx.workspace), spec.get("ops") or [],
+                          theme)
     else:
         raise MediaError(f"unknown kind {kind!r}")
     out = _out(ctx, output, f"media/{kind}.png", ".png")
-    I.save_png(im, out, {"jev": json.dumps({"kind": kind})})
+    I.save_png(im, out, {"jev": json.dumps({"kind": kind})}, root=ctx.workspace)
     return ToolResult(True, f"Saved {_rel(ctx, out)} ({im.width}x{im.height}).",
                       [ctx.artifact(out, "image", kind.replace("_", " ").title())])
 
@@ -286,7 +289,7 @@ def probe_media(ctx: ToolContext, path: str) -> ToolResult:
     p = ctx.path(path)
     lim = _limits(ctx)
     if p.suffix.lower() in V.IMAGE_EXT - {".gif"}:
-        im = open_image_safely(p, lim)
+        im = open_image_safely(p, lim, root=ctx.workspace)
         return ToolResult(True, f"{p.name}: image {im.width}x{im.height}, {p.stat().st_size / 1024:.0f} KB.",
                           data={"kind": "image", "width": im.width, "height": im.height, "bytes": p.stat().st_size})
     info = F.probe(p, ctx.workspace, lim, check=False)
@@ -306,7 +309,7 @@ def probe_media(ctx: ToolContext, path: str) -> ToolResult:
 
 def _shot_sheet(ctx: ToolContext, a: FT.Analysis, times: list[float], labels: list[str], out: Path) -> Path:
     thumbs = [FT.frame_at(a.path, ctx.workspace, t, 320, a.info) for t in times]
-    I.contact_sheet(thumbs, cols=min(4, len(thumbs)), thumb_w=320, labels=labels).save(out)
+    wsfs.save_image(I.contact_sheet(thumbs, cols=min(4, len(thumbs)), thumb_w=320, labels=labels), ctx.workspace, out)
     return out
 
 
@@ -328,7 +331,7 @@ def find_scenes(ctx: ToolContext, path: str, encoder_run: str | None = None, sen
                    cancelled=ctx.cancelled)
     stem = Path(path).stem
     js = _out(ctx, f"media/{stem}.shots.json", "", ".json")
-    js.write_text(json.dumps(a.to_json(), indent=2))
+    wsfs.write_text(ctx.workspace, js, json.dumps(a.to_json(), indent=2))
     arts = [ctx.artifact(js, "data", "Shots")]
     shown = a.shots[:24]
     if shown:
