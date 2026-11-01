@@ -447,7 +447,11 @@ _GEN_COMMON = {"model": {"type": "string", "description": "catalog name or a fol
 @tool(
     name="generate_image",
     description=f"Generate an image from text with a local diffusion model ({', '.join(n for n, s in G.CATALOG.items() if s.kind == 'image')}). "
-                "Needs the model downloaded and diffusers installed; uses the GPU. Always asks first.",
+                "For artistic or photographic pictures only: NOT for black holes or physics (use render_black_hole "
+                "or simulate_physics: exact, free and no download), charts (make_plot) or diagrams, title cards "
+                "and slides (make_image). Needs the model downloaded (see 'Generative models installed' in the "
+                "system prompt) and diffusers installed; uses the GPU. Leave steps, guidance and size unset: each "
+                "model has tuned defaults. Always asks first.",
     parameters={"type": "object", "properties": dict(_GEN_COMMON), "required": ["model", "prompt"]},
     risk="approve", category="image")
 def generate_image(ctx: ToolContext, model: str, prompt: str, negative_prompt: str | None = None, seed: int = 0,
@@ -459,14 +463,17 @@ def generate_image(ctx: ToolContext, model: str, prompt: str, negative_prompt: s
                          progress=ctx.progress, cancelled=ctx.cancelled)
     m = r["meta"]
     return ToolResult(True, f"Generated {_rel(ctx, r['image'])} with {m['model']} ({m['width']}x{m['height']}, "
-                            f"{m['steps']} steps, seed {seed}) on {m['device']} in {m['seconds']:.0f} s.",
+                            f"{m['steps']} steps, seed {seed}) on {m['device']} in {m['seconds']:.0f} s."
+                            + (f" Note: {m['adjusted']}." if m.get("adjusted") else ""),
                       [ctx.artifact(r["image"], "image", "Generated image", **m)], data=m)
 
 
 @tool(
     name="generate_video",
     description=f"Generate a short video clip from text with a local model ({', '.join(n for n, s in G.CATALOG.items() if s.kind == 'video')}). "
-                "Needs a GPU (refused on CPU), the model downloaded and diffusers installed. Always asks first.",
+                "For artistic or photographic footage only: NOT for black holes or physics (render_black_hole with "
+                "frames > 1, simulate_physics) or explainers (make_explainer_video). Needs a GPU (refused on CPU), "
+                "the model downloaded and diffusers installed. Leave steps and guidance unset. Always asks first.",
     parameters={"type": "object", "properties": {**_GEN_COMMON, "frames": {"type": "integer", "minimum": 9,
                                                                            "maximum": 257},
                                                  "fps": {"type": "integer", "minimum": 8, "maximum": 30}},

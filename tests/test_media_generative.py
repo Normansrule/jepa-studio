@@ -201,3 +201,31 @@ def test_download_patterns_and_manifest(tmp_path):
     assert G.inspect_model_dir(d, verify=True)["verified"]
     with pytest.raises(MediaError, match="unknown model"):
         G.download_model("some-random-model", settings, snapshot=snapshot)
+
+
+def test_distilled_models_clamp_steps_and_guidance(setup):
+    # A language model asked flux-schnell for 50 steps at guidance 7.5 (seen on a real run): distilled
+    # few-step models are clamped instead of burning minutes on a worse image.
+    models, ws, settings, made = setup
+    make_model(models, "sdxl-turbo", "StableDiffusionXLPipeline")
+    r = G.generate_image("sdxl-turbo", "a fox", "a.png", ws, steps=50, guidance=7.5, settings=settings, gpu=NO_GPU)
+    call = made["pipe"].calls[-1]
+    assert call["steps"] == 4 and call["guidance"] == 0.0
+    assert "distilled" in r["meta"]["adjusted"] and "50 -> 4" in r["meta"]["adjusted"]
+    r = G.generate_image("sdxl-turbo", "a fox", "b.png", ws, steps=2, settings=settings, gpu=NO_GPU)
+    assert made["pipe"].calls[-1]["steps"] == 2 and "adjusted" not in r["meta"]
+    s, g, note = G._distilled_steps_guidance(G.CATALOG["flux-schnell"], 50, 7.5)
+    assert (s, g) == (8, 0.0) and note
+    s, g, note = G._distilled_steps_guidance(G.CATALOG["ltx-video"], 50, 7.5)   # not distilled: untouched
+    assert (s, g, note) == (50, 7.5, "")
+
+
+def test_installed_models_lists_only_real_folders(setup, tmp_path):
+    models, ws, settings, _ = setup
+    assert G.installed_models(settings) == []
+    make_model(models, "sdxl-turbo", "StableDiffusionXLPipeline")
+    (models / "flux-schnell").mkdir()                        # empty folder: not installed
+    mine = make_model(tmp_path / "elsewhere", "my-flux", "FluxPipeline")
+    settings["media"]["model_dirs"] = {"my-flux": str(mine), "gone": str(tmp_path / "missing")}
+    assert G.installed_models(settings) == ["sdxl-turbo", "my-flux"]
+    assert G.installed_models(settings, kind="video") == ["my-flux"]   # unknown kind for a mapped name: kept

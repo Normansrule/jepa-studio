@@ -182,6 +182,40 @@ def resolve_model(model: str, settings: dict | None = None) -> tuple[Path, Model
     return d, CATALOG.get(model)
 
 
+def installed_models(settings: dict | None = None, kind: str | None = None) -> list[str]:
+    """Names generate_image / generate_video can use right now: catalog models whose folder exists under
+    the models folder, plus any media.model_dirs mapping that points at an existing folder. A cheap check
+    (no hashing) so the agent can tell the language model what is really there."""
+    names: list[str] = []
+    for name, spec in CATALOG.items():
+        if (kind is None or spec.kind == kind) and (models_dir(settings) / name / "model_index.json").is_file():
+            names.append(name)
+    for name, folder in ((settings or {}).get("media", {}) or {}).get("model_dirs", {}).items():
+        spec = CATALOG.get(name)
+        if name not in names and (kind is None or spec is None or spec.kind == kind) \
+                and (Path(folder).expanduser() / "model_index.json").is_file():
+            names.append(name)
+    return names
+
+
+def _distilled_steps_guidance(spec: ModelSpec, steps: int, guidance: float) -> tuple[int, float, str]:
+    """Distilled models (SDXL-Turbo, FLUX.1-schnell; catalog default guidance 0) are trained for a few steps
+    without classifier-free guidance: 50 steps at guidance 7.5 only wastes minutes and burns the image.
+    Clamp to at most max(4, 2 x default) steps and guidance 0, and say so."""
+    d = spec.defaults
+    if d.get("guidance", None) != 0.0:
+        return steps, guidance, ""
+    cap = max(4, 2 * int(d.get("steps", 4)))
+    notes = []
+    if steps > cap:
+        notes.append(f"steps {steps} -> {cap}")
+        steps = cap
+    if guidance != 0.0:
+        notes.append(f"guidance {guidance:g} -> 0")
+        guidance = 0.0
+    return steps, guidance, (f"{spec.name} is a distilled few-step model: " + ", ".join(notes)) if notes else ""
+
+
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()
     with open(p, "rb") as f:  # wsfs-ok: the models folder
@@ -345,6 +379,7 @@ def generate_image(model: str, prompt: str, out: str | Path, workspace: str | Pa
         raise MediaError("steps must be within 1..100")
     w, h = _check_size(spec, width or d.get("width", 1024), height or d.get("height", 1024))
     g = d.get("guidance", 5.0) if guidance is None else float(guidance)
+    steps, g, adjusted = _distilled_steps_guidance(spec, steps, g)
     t0 = time.monotonic()
     pipe = (_FACTORY or _diffusers_factory)(path, spec, plan)
     kw = {"prompt": prompt, "num_inference_steps": steps, "guidance_scale": g, "width": w, "height": h,
@@ -361,6 +396,8 @@ def generate_image(model: str, prompt: str, out: str | Path, workspace: str | Pa
             "seed": seed, "steps": steps, "guidance": g, "width": w, "height": h, "device": plan["device"],
             "dtype": plan["dtype"], "offload": plan["offload"], "license": spec.license,
             "seconds": round(time.monotonic() - t0, 2), "generator": "jev.media.generative"}
+    if adjusted:
+        meta["adjusted"] = adjusted
     save_png(im, o, {"jev": json.dumps(meta)}, root=ws)
     wsfs.write_text(ws, o.with_suffix(".json"), json.dumps(meta, indent=2))
     return {"image": o, "meta": meta, "plan": plan, "ignored_pickles": info["ignored_pickles"]}

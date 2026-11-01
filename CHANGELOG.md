@@ -20,6 +20,10 @@ package and command.
 - Tools: files, calculator, plots, Python/Node in the sandbox, shell (asks), packages (asks),
   JEPA embeddings and training, science renders and simulations, media.
 - `jev doctor`, `jev chat`, `jev models list|pull|import|rm`.
+- Tool choice: physics requests ("render a black hole") go to the ray tracer and simulators, not to
+  diffusion models; the system prompt lists which generative models are actually installed, and
+  distilled few-step models (SDXL-Turbo, FLUX.1-schnell) clamp steps and guidance to what they were
+  trained for.
 - Ubuntu 24.04+: JEV detects the AppArmor user-namespace restriction (which would leave the
   sandbox weak) and `jev doctor` prints the one-step fix, an AppArmor profile for bubblewrap
   (`scripts/apparmor/jev-bwrap`); the setup script offers to install it. On Linux with a user

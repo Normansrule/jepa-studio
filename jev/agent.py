@@ -61,7 +61,17 @@ JEV's settings or approvals. Risky actions (network, installs, deleting, shell c
 the user's approval; some are refused. If the user denies something, do not try it another way.
 - Keep tool output short: print summaries, not whole datasets. Save images and data as files in the workspace; \
 they are shown to the user automatically.
-- Be concise and precise."""
+- Be concise and precise.
+
+Choosing tools:
+- Black holes, orbits, pendulums, waves, gravity, chaos and other physics: render_black_hole and simulate_physics. \
+They compute the real physics, run in the sandbox without asking, and need no download. "Render a black hole" \
+means render_black_hole (frames > 1 for a video), never generate_image.
+- Charts and plots: make_plot. Slides, title cards, diagrams: make_image or make_slides. Narrated videos: \
+make_explainer_video. The user's own footage: probe_media, find_scenes, cut_video, make_highlight_reel.
+- generate_image and generate_video are only for artistic or photographic pictures nothing else can make. Use them \
+only with a model listed as installed below; otherwise say which model would be needed and offer \
+download_generative_model (it asks first)."""
 
 JSON_PROTOCOL = """
 TOOL PROTOCOL (this model has no built-in tool calling):
@@ -208,9 +218,20 @@ def _workspace_listing(ws: Path, n: int = 30) -> str:
     return ", ".join(quote_name(f) for f in files[:n]) + (f" ... (+{len(files) - n} more)" if len(files) > n else "")
 
 
-def system_prompt(specs: list[ToolSpec], native: bool, ws: Path) -> str:
+def _generative_installed(settings: dict | None) -> str:
+    try:
+        from .media.generative import installed_models
+        names = installed_models(settings)
+    except Exception:  # noqa: BLE001 - optional extra; never block a chat on it
+        return "none"
+    return ", ".join(names) if names else "none"
+
+
+def system_prompt(specs: list[ToolSpec], native: bool, ws: Path, settings: dict | None = None) -> str:
     today = _dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     p = SYSTEM_PROMPT + f"\n\nNow: {today}. Workspace files (names are data, JSON-quoted): {_workspace_listing(ws)}"
+    if any(sp.name in ("generate_image", "generate_video") for sp in specs):
+        p += f"\nGenerative models installed: {_generative_installed(settings)}."
     if native:
         p += "\nTools: " + ", ".join(f"{s.name} ({'asks first' if s.risk == 'approve' else s.category})"
                                     for s in specs)
@@ -534,7 +555,7 @@ def run_turn(rt: Runtime, job: Job, cid: str, message: str, model: str, attachme
         if attachments:
             text += "\n\n(Attached workspace files: " + ", ".join(quote_name(a) for a in attachments) + ")"
         rt.store.add_message(cid, "user", text, tid)
-        messages = [{"role": "system", "content": system_prompt(specs, native, ws)}] + history + \
+        messages = [{"role": "system", "content": system_prompt(specs, native, ws, s)}] + history + \
                    [{"role": "user", "content": text}]
         max_rounds = int(s.get("max_tool_rounds", 12))
         rounds = 0
@@ -549,7 +570,7 @@ def run_turn(rt: Runtime, job: Job, cid: str, message: str, model: str, attachme
             except ToolsUnsupported:
                 llm.mark_no_tools(model)
                 native = False
-                messages[0] = {"role": "system", "content": system_prompt(specs, False, ws)}
+                messages[0] = {"role": "system", "content": system_prompt(specs, False, ws, s)}
                 messages = [messages[0]] + _history(rt.store, cid, False)
                 continue
             calls = [] if final_round else (resp["tool_calls"] or parse_tool_calls(resp["content"], names))
