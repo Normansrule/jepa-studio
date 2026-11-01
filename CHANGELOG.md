@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 (2026-10-31)
+
+- Physics requests ("render a black hole") go to the ray tracer and simulators, not to diffusion models;
+  the system prompt lists which generative models are installed.
+- An identical tool call that already ran without asking is not run again in the same turn; after two
+  repeats tools switch off and JEV answers (a local model rendered the same black hole seven times).
+- Distilled models (SDXL-Turbo, FLUX.1-schnell) clamp steps and guidance to what they were trained for.
+- `jev models pull sdxl-turbo` downloads image/video models from the terminal (asks first, audited,
+  warns when the GPU is too small); `jev models` lists them as installed or available.
+
 ## 0.4.0 (2026-10-30): JEV Studio
 
 The project is now **JEV Studio** (repository `jev-jepa-studio`): JEPA Studio plus **JEV**, a
@@ -20,10 +30,6 @@ package and command.
 - Tools: files, calculator, plots, Python/Node in the sandbox, shell (asks), packages (asks),
   JEPA embeddings and training, science renders and simulations, media.
 - `jev doctor`, `jev chat`, `jev models list|pull|import|rm`.
-- Tool choice: physics requests ("render a black hole") go to the ray tracer and simulators, not to
-  diffusion models; the system prompt lists which generative models are actually installed, and
-  distilled few-step models (SDXL-Turbo, FLUX.1-schnell) clamp steps and guidance to what they were
-  trained for.
 - Ubuntu 24.04+: JEV detects the AppArmor user-namespace restriction (which would leave the
   sandbox weak) and `jev doctor` prints the one-step fix, an AppArmor profile for bubblewrap
   (`scripts/apparmor/jev-bwrap`); the setup script offers to install it. On Linux with a user

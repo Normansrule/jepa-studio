@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jepa-studio"
-version = "0.4.0"
+version = "0.4.1"
 description = "JEV Studio: a local AI agent (Ollama) that answers, codes, makes images and videos and renders physics, plus LeJEPA (JEPA + SIGReg) models you train on your own data."
 readme = "README.md"
 license = "MIT"

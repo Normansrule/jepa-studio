@@ -440,6 +440,19 @@ def _json_safe(obj):
     return obj
 
 
+MAX_REPEATS = 2      # identical successful calls skipped in one turn before tools are switched off
+REPEAT_NOTE = ("(JEV: not run again. This exact call already succeeded earlier in this turn and its files are already "
+               "shown to the user. Do not repeat it: answer the user now, or use different arguments if they asked "
+               "for something different.)")
+
+
+def _call_key(call: dict) -> str:
+    try:
+        return call["name"] + "\0" + canonical_args(call.get("arguments") or {})
+    except (TypeError, ValueError):
+        return ""
+
+
 def execute_call(rt: Runtime, job: Job, cid: str, tid: str, ws: Path, call: dict) -> tuple[bool, str]:
     name, args, call_id = call["name"], call.get("arguments") or {}, call["id"]
     bad_values = unrepresentable_values(args)
@@ -559,10 +572,12 @@ def run_turn(rt: Runtime, job: Job, cid: str, message: str, model: str, attachme
                    [{"role": "user", "content": text}]
         max_rounds = int(s.get("max_tool_rounds", 12))
         rounds = 0
+        succeeded: set[str] = set()
+        repeats = 0
         while True:
             if job.cancelled():
                 raise Cancelled()
-            final_round = rounds >= max_rounds
+            final_round = rounds >= max_rounds or repeats >= MAX_REPEATS
             filt = TokenFilter(job)
             try:
                 resp = llm.chat(model, messages, tools=[sp.schema() for sp in specs] if native and not final_round
@@ -593,7 +608,18 @@ def run_turn(rt: Runtime, job: Job, cid: str, message: str, model: str, attachme
             for c in calls:
                 if job.cancelled():
                     raise Cancelled()
-                ok, out = execute_call(rt, job, cid, tid, ws, c)
+                key = _call_key(c)
+                if key in succeeded:
+                    # Small local models sometimes repeat a successful call verbatim (a real run rendered
+                    # the same black hole seven times). Don't redo the work; tell the model to answer.
+                    repeats += 1
+                    ok, out = True, REPEAT_NOTE
+                else:
+                    ok, out = execute_call(rt, job, cid, tid, ws, c)
+                    # only calls that ran without asking: a repeat that needs approval asks you again
+                    if ok and key and any(e["event"] == "tool_call" and e.get("call_id") == c.get("id")
+                                          and e.get("decision") == "run" for e in job.events):
+                        succeeded.add(key)
                 rt.store.add_message(cid, "tool", out, tid, tool_name=c["name"])
                 body = wrap_untrusted(out, f"tool:{c['name']}")
                 if native:
@@ -601,7 +627,11 @@ def run_turn(rt: Runtime, job: Job, cid: str, message: str, model: str, attachme
                 else:
                     messages.append({"role": "user", "content": f"TOOL RESULT ({c['name']}, "
                                                                 f"{'ok' if ok else 'failed'}):\n{body}"})
-            if rounds >= max_rounds:
+            if repeats >= MAX_REPEATS and rounds < max_rounds:
+                messages.append({"role": "user", "content": "(JEV: the same tool call was repeated, so tools are off "
+                                                            "for the rest of this turn. Answer now: say what was done, "
+                                                            "and name the files already shown.)"})
+            elif rounds >= max_rounds:
                 messages.append({"role": "user", "content": f"(JEV: the limit of {max_rounds} tool rounds for one "
                                                             "turn is reached. Answer now without tools: say what was "
                                                             "done and what is left.)"})

@@ -1,2 +1,2 @@
 """jepa-studio: pretrain, inspect and use LeJEPA models on your own unlabeled data."""
-__version__ = "0.4.0"
+__version__ = "0.4.1"

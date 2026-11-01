@@ -1,6 +1,6 @@
 [package]
 name = "jev-studio"
-version = "0.4.0"
+version = "0.4.1"
 description = "Desktop shell for JEV Studio: runs the local backend (JEPA + JEV) and shows the site/ front end"
 authors = ["Aleksander Norman"]
 license = "MIT"

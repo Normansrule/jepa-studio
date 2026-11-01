@@ -96,6 +96,14 @@ card.
 
 ## Generative models
 
+Quick start (asks before downloading; lists what fits your GPU):
+
+```bash
+pip install -e '.[gen]'          # or: pip install 'jepa-studio[gen]'
+jev models                        # Ollama models plus image/video models, installed or available
+jev models pull sdxl-turbo        # ~7 GB, needs ~5-8 GB of GPU memory
+```
+
 Install `pip install 'jepa-studio[gen]'` (diffusers, transformers, accelerate, sentencepiece, ftfy,
 huggingface_hub). The adapters are written against the documented pipeline APIs and checked against
 diffusers 0.42: `from_pretrained(..., torch_dtype=, use_safetensors=True, local_files_only=True)`,

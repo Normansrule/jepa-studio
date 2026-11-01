@@ -15,4 +15,4 @@ Layout:
     jev.science        black-hole ray tracer and physics simulations
     jev.media          speech, slides, video assembly, footage editing, generative adapters
 """
-__version__ = "0.4.0"
+__version__ = "0.4.1"

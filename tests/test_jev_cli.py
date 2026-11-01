@@ -85,3 +85,33 @@ def test_chat_denies_on_eof(jev_env, capsys, monkeypatch):  # noqa: F811
     assert main(["--root", str(root), "chat", "run it"]) == 0
     out = capsys.readouterr().out
     assert "failed: The user denied" in out and "Okay, not running it." in out
+
+
+def test_models_pull_generative_asks_and_lists(jev_env, capsys, monkeypatch, tmp_path):  # noqa: F811
+    from jev.media import generative as G
+    root, fake = jev_env
+    monkeypatch.setenv("JEV_MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(G, "detect_gpu", lambda: {"backend": "cuda", "name": "Fake 16 GB", "vram_gb": 16.0})
+    got = []
+
+    def fake_download(name, settings=None, **kw):
+        got.append(name)
+        d = G.models_dir(settings) / name
+        d.mkdir(parents=True)
+        (d / "model_index.json").write_text("{}")
+        return {"model": name, "folder": str(d), "files": 1, "bytes": 2, "class_name": "X"}
+    monkeypatch.setattr(G, "download_model", fake_download)
+    assert main(["--root", str(root), "models"]) == 0
+    assert "available: sdxl-turbo" in capsys.readouterr().out
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "n")
+    assert main(["--root", str(root), "models", "pull", "sdxl-turbo"]) == 1 and got == []
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "y")
+    assert main(["--root", str(root), "models", "pull", "sdxl-turbo"]) == 0 and got == ["sdxl-turbo"]
+    assert "Hugging Face" not in fake.models and "sdxl-turbo" not in fake.models   # not sent to Ollama
+    assert main(["--root", str(root), "models", "pull", "flux-schnell", "-y"]) == 0
+    out = capsys.readouterr().out
+    assert "needs ~24 GB" in out and "refused" in out                                  # 16 GB card warned
+    assert main(["--root", str(root), "models"]) == 0
+    assert "installed: sdxl-turbo" in capsys.readouterr().out
+    assert main(["--root", str(root), "audit"]) == 0
+    assert "download_generative_model" in capsys.readouterr().out

@@ -247,3 +247,19 @@ def test_plot_and_artifacts_from_code(tmp_path, strong_sandbox):  # noqa: F811
     assert all(a["mime"] == "image/png" and a["kind"] == "image" for a in arts)
     files = rt.store.list_artifacts(r["conversation_id"])
     assert len(files) == 2 and all(f["bytes"] > 1000 for f in files)
+
+
+def test_repeated_identical_calls_run_once(jev_env):  # noqa: F811
+    # A real qwen2.5-coder run called render_black_hole seven times with the same arguments.
+    root, fake = jev_env
+    calc = {"content": "", "tool_calls": [{"name": "calculator", "arguments": {"expression": "6*7"}}]}
+    other = {"content": "", "tool_calls": [{"name": "calculator", "arguments": {"expression": "6*8"}}]}
+    fake.script = [calc, calc, other, calc,               # 2nd repeat: tools switched off
+                   lambda body: {"content": "tools were off" if not body.get("tools") else "tools still on"}]
+    rt = Runtime(root)
+    _, job = _run(rt, "What is 6*7?")
+    calls = [e for e in job.events if e["event"] == "tool_call"]
+    assert [c["args"]["expression"] for c in calls] == ["6*7", "6*8"]     # each distinct call ran once
+    assert job.status == "done" and job.events[-1]["text"] == "tools were off"
+    sent = [m for body in fake.chats() for m in body["messages"]]
+    assert any("not run again" in str(m.get("content")) for m in sent)

@@ -9,7 +9,7 @@ type: software
 authors:
   - family-names: Norman
     given-names: Aleksander
-version: 0.4.0
+version: 0.4.1
 license: MIT
 repository-code: "https://github.com/Normansrule/jev-jepa-studio"
 url: "https://normansrule.github.io/jev-jepa-studio/"

@@ -135,6 +135,31 @@ def cmd_doctor(args) -> int:
 
 
 # ------------------------------------------------------------------------------------------ models
+def _pull_generative(rt, G, args) -> int:
+    """`jev models pull sdxl-turbo`: a local image/video model (Hugging Face, safetensors only), same
+    approval and audit row as the download_generative_model tool."""
+    sp = G.CATALOG[args.name]
+    gpu = G.detect_gpu()
+    if gpu.get("vram_gb", 0) and gpu["vram_gb"] < sp.vram_gb_offload:
+        print(f"note: {args.name} needs ~{sp.vram_gb_offload:g} GB of GPU memory even with offloading; "
+              f"{gpu.get('name', 'this GPU')} has {gpu['vram_gb']:.0f} GB, so it will be refused when you run it.")
+    reason = (f"Download {args.name} ({sp.repo}, ~{sp.download_gb:g} GB, {sp.license}) from Hugging Face into "
+              f"{G.models_dir(rt.settings.resolved())} (network)")
+    yes = _ask(reason + "?", args.yes)
+    _audit(rt, "download_generative_model", {"model": args.name}, reason, ["model_download", "network"], yes)
+    if not yes:
+        print("not downloaded")
+        return 1
+    try:
+        r = G.download_model(args.name, rt.settings.resolved(),
+                             progress=lambda f, m: print(f"\r{m[:66]:<66} {f * 100:5.1f}%", end="", flush=True))
+    except G.MediaError as e:
+        print(f"\n{e}")
+        return 1
+    print(f"\n{args.name}: {r['files']} files, {r['bytes'] / 2**30:.1f} GB in {r['folder']} (SHA-256 recorded)")
+    return 0
+
+
 def cmd_models(args) -> int:
     from .llm import OllamaError, sha256_file
 
@@ -148,7 +173,16 @@ def cmd_models(args) -> int:
                       f"{m.get('quantization') or ''}{'  (cloud: runs on ollama.com)' if m['remote'] else ''}")
             for m in rt.store.list_models():
                 print(f"imported: {m['name']}  sha256 {m['sha256']}  from {m['path']}")
+            from .media import generative as G
+            have = set(G.installed_models(rt.settings.resolved()))
+            for n, sp in G.CATALOG.items():
+                print(f"{'installed' if n in have else 'available'}: {n:<18} {sp.kind:<5} ~{sp.download_gb:g} GB, "
+                      f"needs ~{sp.vram_gb_offload:g}+ GB GPU memory  (jev models pull {n})")
             return 0
+        if args.action == "pull" and args.name:
+            from .media import generative as G
+            if args.name in G.CATALOG:
+                return _pull_generative(rt, G, args)
         if args.action == "pull":
             reason = f"Download {args.name} from the Ollama registry (network)"
             yes = _ask(reason + "?", args.yes)

@@ -1,7 +1,7 @@
 {
   "name": "jev-studio-desktop",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Tauri 2 desktop shell for JEV Studio (the front end is ../site, no build step)",
   "license": "MIT",
   "scripts": {
